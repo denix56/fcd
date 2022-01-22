@@ -9,6 +9,7 @@ import os
 import random
 import numpy as np
 from albumentations.pytorch.transforms import ToTensorV2
+from pickle import dump, load
 
 import pytorch_lightning as pl
 
@@ -119,17 +120,24 @@ class L8BiomeDataset(data.Dataset):
         return len(self.images)
 
     def _make_dataset(self, root, class_to_idx):
-        images = []
-        for target in sorted(class_to_idx.keys()):
-            d = os.path.join(root, target)
-            if not os.path.isdir(d):
-                continue
-            for patch_dir, _, file_names in sorted(os.walk(d)):
-                if len(file_names) == 0:
+        try:
+            with open('ds_files_l8biome.pkl', 'rb') as f:
+                images = load(f)
+        except:
+            images = []
+            for target in sorted(class_to_idx.keys()):
+                d = os.path.join(root, target)
+                if not os.path.isdir(d):
                     continue
+                for patch_dir, _, file_names in sorted(os.walk(d)):
+                    if len(file_names) == 0:
+                        continue
 
-                patch_name = patch_dir.split('/')[-1]
-                images.append((patch_dir, self.class_to_idx[target], patch_name))
+                    patch_name = patch_dir.split('/')[-1]
+                    images.append((patch_dir, self.class_to_idx[target], patch_name))
+
+            with open('ds_files_l8biome.pkl', 'wb') as f:
+                dump(images, f)
 
         return images
 
