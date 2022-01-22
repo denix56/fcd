@@ -34,7 +34,7 @@ class FCDSolver(pl.LightningModule):
 
     def __init__(self, config):
         """Initialize configurations."""
-        super().__init__
+        super().__init__()
         # Data loader.
         self.train_loader = None
         self.val_loader = None
