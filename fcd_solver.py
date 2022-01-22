@@ -94,6 +94,8 @@ class FCDSolver(pl.LightningModule):
 
         self.save_hyperparameters(config)
 
+        self.example_input_array = (torch.zeros(1, 3, 128, 128), torch.zeros(1))
+
         # Build the model and tensorboard.
         self.build_model()
         # if self.use_tensorboard and config.mode == 'train':
@@ -103,13 +105,15 @@ class FCDSolver(pl.LightningModule):
         self.c_fixed_list = None
 
         self.metrics_val = MetricCollection([Accuracy(num_classes=2, average='macro', compute_on_step=False),
-                                             JaccardIndex(num_classes=2, average='macro', compute_on_step=False),
+                                             JaccardIndex(num_classes=2, compute_on_step=False),
                                              F1Score(num_classes=2, average='macro', compute_on_step=False)], prefix='val/')
 
     def build_model(self):
         """Create a generator and a discriminator."""
         if self.dataset in ['L8Biome']:
+            print('Building generator...')
             self.G = Generator(self.g_conv_dim, self.c_dim, self.g_repeat_num, self.num_channels)
+            print('Building discriminator...')
             self.D = Discriminator(self.image_size, self.d_conv_dim, self.c_dim, self.d_repeat_num, self.num_channels)
 
         # if self.config.mode == 'train':
@@ -144,6 +148,12 @@ class FCDSolver(pl.LightningModule):
 
         return opt_D, opt_G
 
+    def forward(self, batch):
+        x_real, c_trg = batch
+        x_fake = self.G(x_real, c_trg)
+        out_src, out_cls = self.D(x_fake)
+
+        return out_src, out_cls
     # def print_network(self, model, name):
     #     """Print out the network information."""
     #     num_params = 0

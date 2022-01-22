@@ -41,7 +41,7 @@ def main(config):
         ms = pl.callbacks.ModelSummary(max_depth=10)
         cpt = pl.callbacks.ModelCheckpoint(config.model_save_dir, monitor='val/F1Score', mode='max')
 
-        logger = TensorBoardLogger('runs', name=config.experiment_name)
+        logger = TensorBoardLogger('runs', name=config.experiment_name, log_graph=True)
 
         trainer = pl.Trainer(logger, accelerator="gpu", devices=config.n_gpus, callbacks=[lrm, ms, cpt],
                              check_val_every_n_epoch=1, strategy="ddp" if config.n_gpus > 1 else None,
