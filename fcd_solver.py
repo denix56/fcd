@@ -23,13 +23,18 @@ from evaluate import get_metrics_dict
 from models.fixed_point_gan import Discriminator
 from models.fixed_point_gan import Generator
 
+import pytorch_lightning as pl
 
-class FCDSolver(object):
+from torchmetrics import MetricCollection
+from torchmetrics import JaccardIndex, Accuracy, F1Score
+
+
+class FCDSolver(pl.LightningModule):
     """Solver for training and testing Fixed-Point GAN for Cloud Detection."""
 
     def __init__(self, config):
         """Initialize configurations."""
-
+        super().__init__
         # Data loader.
         self.train_loader = None
         self.val_loader = None
@@ -88,10 +93,19 @@ class FCDSolver(object):
         self.model_save_step = config.model_save_step
         self.lr_update_step = config.lr_update_step
 
+        self.save_hyperparameters(config)
+
         # Build the model and tensorboard.
         self.build_model()
-        if self.use_tensorboard and config.mode == 'train':
-            self.build_tensorboard()
+        # if self.use_tensorboard and config.mode == 'train':
+        #     self.build_tensorboard()
+
+        self.x_fixed = None
+        self.c_fixed_list = None
+
+        self.metrics_val = MetricCollection([Accuracy(num_classes=2, average='macro', compute_on_step=False),
+                                             JaccardIndex(num_classes=2, average='macro', compute_on_step=False),
+                                             F1Score(num_classes=2, average='macro', compute_on_step=False)], prefix='val/')
 
     def build_model(self):
         """Create a generator and a discriminator."""
@@ -99,40 +113,62 @@ class FCDSolver(object):
             self.G = Generator(self.g_conv_dim, self.c_dim, self.g_repeat_num, self.num_channels)
             self.D = Discriminator(self.image_size, self.d_conv_dim, self.c_dim, self.d_repeat_num, self.num_channels)
 
-        self.g_optimizer = torch.optim.Adam(self.G.parameters(), self.g_lr, [self.beta1, self.beta2])
-        self.d_optimizer = torch.optim.Adam(self.D.parameters(), self.d_lr, [self.beta1, self.beta2])
+        # if self.config.mode == 'train':
+        #     self.print_network(self.G, 'G')
+        #     self.print_network(self.D, 'D')
 
-        if self.config.mode == 'train':
-            self.print_network(self.G, 'G')
-            self.print_network(self.D, 'D')
+    def configure_optimizers(self):
+        milestones = np.arange(self.lr_update_step, self.num_iters_decay, self.lr_update_step)
 
-        self.G.to(self.device)
-        self.D.to(self.device)
+        def lr_func(step):
+            if (step + 1) % self.lr_update_step == 0 and (step + 1) > (self.num_iters - self.num_iters_decay):
+                return 1 - (step + 1) / self.lr_update_step / float(self.num_iters_decay)
+            else:
+                return 1
 
-    def print_network(self, model, name):
-        """Print out the network information."""
-        num_params = 0
-        for p in model.parameters():
-            num_params += p.numel()
-        print(model)
-        print(f"Number of parameters for {name}: {num_params:,}")
+        # TODO: add self.num_iters_decay
+        opt_D = torch.optim.Adam(self.D.parameters(), self.d_lr, (self.beta1, self.beta2))
+        sched_D = torch.optim.lr_scheduler.LambdaLR(opt_D, lambda step: lr_func(step))
 
-    def restore_model(self, resume_iters, only_g=False):
-        """Restore the trained generator and discriminator."""
-        checkpoint_path = os.path.join(self.model_save_dir, '{}-model.ckpt'.format(resume_iters))
-        checkpoint = torch.load(checkpoint_path)
-        self.G.load_state_dict(checkpoint['G'])
-        if not only_g:
-            self.D.load_state_dict(checkpoint['D'])
-        self.best_val_f1 = checkpoint['best_val_f1'] if 'best_val_f1' in checkpoint.keys() else 0  # TODO
-        print('Loading the trained models from step {} with validation F1 {}'.format(resume_iters, self.best_val_f1))
+        opt_G = torch.optim.Adam(self.G.parameters(), self.g_lr, (self.beta1, self.beta2))
+        sched_G = torch.optim.lr_scheduler.LambdaLR(opt_G, lambda step: lr_func(step))
 
-    def build_tensorboard(self):
-        """Build a tensorboard logger."""
-        if self.config.experiment_name is not None:
-            self.tensorboard_writer = SummaryWriter(log_dir=os.path.join('runs', self.config.experiment_name))
-        else:
-            self.tensorboard_writer = SummaryWriter()
+        opt_D = {'optimizer': opt_D,
+                 'lr_scheduler': {'scheduler': sched_D,
+                                  'interval': 'step'
+                                  }}
+
+        opt_G = {'optimizer': opt_G,
+                 'lr_scheduler': {'scheduler': sched_G,
+                                  'interval': 'step'
+                                  }}
+
+        return opt_D, opt_G
+
+    # def print_network(self, model, name):
+    #     """Print out the network information."""
+    #     num_params = 0
+    #     for p in model.parameters():
+    #         num_params += p.numel()
+    #     print(model)
+    #     print(f"Number of parameters for {name}: {num_params:,}")
+
+    # def restore_model(self, resume_iters, only_g=False):
+    #     """Restore the trained generator and discriminator."""
+    #     checkpoint_path = os.path.join(self.model_save_dir, '{}-model.ckpt'.format(resume_iters))
+    #     checkpoint = torch.load(checkpoint_path)
+    #     self.G.load_state_dict(checkpoint['G'])
+    #     if not only_g:
+    #         self.D.load_state_dict(checkpoint['D'])
+    #     self.best_val_f1 = checkpoint['best_val_f1'] if 'best_val_f1' in checkpoint.keys() else 0  # TODO
+    #     print('Loading the trained models from step {} with validation F1 {}'.format(resume_iters, self.best_val_f1))
+
+    # def build_tensorboard(self):
+    #     """Build a tensorboard logger."""
+    #     if self.config.experiment_name is not None:
+    #         self.tensorboard_writer = SummaryWriter(log_dir=os.path.join('runs', self.config.experiment_name))
+    #     else:
+    #         self.tensorboard_writer = SummaryWriter()
 
     def update_lr(self, g_lr, d_lr):
         """Decay learning rates of the generator and discriminator."""
@@ -189,10 +225,9 @@ class FCDSolver(object):
         if dataset in ['L8Biome']:
             return F.binary_cross_entropy_with_logits(logit, target)
 
-    def train(self):
-        """Train StarGAN within a single dataset."""
-        # Set data loader.
-        data_loader = self.train_loader
+
+    def on_train_start(self):
+        data_loader = self.trainer.datamodule.train_dataloader()
 
         # Fetch fixed inputs for debugging.
         data_iter = iter(data_loader)
@@ -204,50 +239,18 @@ class FCDSolver(object):
         # self.visualize_input_data()
         # exit()
 
-        x_fixed = x_fixed.to(self.device)
-        c_fixed_list = self.create_labels(c_org, self.c_dim, self.dataset)
+        self.x_fixed = x_fixed.to(self.device)
+        self.c_fixed_list = self.create_labels(c_org, self.c_dim, self.dataset)
 
-        # Learning rate cache for decaying.
-        g_lr = self.g_lr
-        d_lr = self.d_lr
 
-        # Start training from scratch or resume training.
-        start_iters = 0
-        if self.resume_iters:
-            start_iters = self.resume_iters
-            self.restore_model(self.resume_iters)
+    def training_step(self, batch, batch_idx, optimizer_idx):
+        # =================================================================================== #
+        #                             1. Preprocess input data                                #
+        # =================================================================================== #
+        x_real, c_org, c_trg, label_org, label_trg = batch
+        loss_dict = {}
 
-        # Start training.
-        print('Start training...')
-        start_time = time.time()
-        for i in range(start_iters, self.num_iters):
-            # =================================================================================== #
-            #                             1. Preprocess input data                                #
-            # =================================================================================== #
-
-            # Fetch real images and labels.
-            try:
-                sample = next(data_iter)
-                x_real, label_org = sample['image'], sample['label']
-            except:
-                data_iter = iter(data_loader)
-                sample = next(data_iter)
-                x_real, label_org = sample['image'], sample['label']
-
-            # Generate target domain labels randomly.
-            rand_idx = torch.randperm(label_org.size(0))
-            label_trg = label_org[rand_idx]
-
-            if self.dataset in ['L8Biome']:
-                c_org = label_org.clone()
-                c_trg = label_trg.clone()
-
-            x_real = x_real.to(self.device)  # Input images.
-            c_org = c_org.to(self.device)  # Original domain labels.
-            c_trg = c_trg.to(self.device)  # Target domain labels.
-            label_org = label_org.to(self.device)  # Labels for computing classification loss.
-            label_trg = label_trg.to(self.device)  # Labels for computing classification loss.
-
+        if optimizer_idx == 0:
             # =================================================================================== #
             #                             2. Train the discriminator                              #
             # =================================================================================== #
@@ -269,158 +272,111 @@ class FCDSolver(object):
             d_loss_gp = self.gradient_penalty(out_src, x_hat)
 
             # Backward and optimize.
-            d_loss = d_loss_real + d_loss_fake + self.lambda_cls * d_loss_cls + self.lambda_gp * d_loss_gp
-            self.reset_grad()
-            d_loss.backward()
-            self.d_optimizer.step()
+            loss = d_loss_real + d_loss_fake + self.lambda_cls * d_loss_cls + self.lambda_gp * d_loss_gp
 
             # Logging.
-            loss = {}
-            loss['D/loss_real'] = d_loss_real.item()
-            loss['D/loss_fake'] = d_loss_fake.item()
-            loss['D/loss_cls'] = d_loss_cls.item()
-            loss['D/loss_gp'] = d_loss_gp.item()
+            loss_dict['D/loss_real'] = d_loss_real.item()
+            loss_dict['D/loss_fake'] = d_loss_fake.item()
+            loss_dict['D/loss_cls'] = d_loss_cls.item()
+            loss_dict['D/loss_gp'] = d_loss_gp.item()
 
+        elif optimizer_idx == 1:
             # =================================================================================== #
             #                               3. Train the generator                                #
             # =================================================================================== #
+            # Original-to-target domain.
+            x_fake = self.G(x_real, c_trg)
+            out_src, out_cls = self.D(x_fake)
+            g_loss_fake = - torch.mean(out_src)
+            g_loss_cls = self.classification_loss(out_cls, label_trg, self.dataset)
 
-            if (i + 1) % self.n_critic == 0:
-                # Original-to-target domain.
-                x_fake = self.G(x_real, c_trg)
-                out_src, out_cls = self.D(x_fake)
-                g_loss_fake = - torch.mean(out_src)
-                g_loss_cls = self.classification_loss(out_cls, label_trg, self.dataset)
+            # Original-to-original domain.
+            x_fake_id = self.G(x_real, c_org)
+            out_src_id, out_cls_id = self.D(x_fake_id)
+            g_loss_fake_id = - torch.mean(out_src_id)
+            g_loss_cls_id = self.classification_loss(out_cls_id, label_org, self.dataset)
+            g_loss_id = torch.mean(torch.abs(x_real - x_fake_id))
 
-                # Original-to-original domain.
-                x_fake_id = self.G(x_real, c_org)
-                out_src_id, out_cls_id = self.D(x_fake_id)
-                g_loss_fake_id = - torch.mean(out_src_id)
-                g_loss_cls_id = self.classification_loss(out_cls_id, label_org, self.dataset)
-                g_loss_id = torch.mean(torch.abs(x_real - x_fake_id))
+            # Target-to-original domain.
+            x_reconst = self.G(x_fake, c_org)
+            g_loss_rec = torch.mean(torch.abs(x_real - x_reconst))
 
-                # Target-to-original domain.
-                x_reconst = self.G(x_fake, c_org)
-                g_loss_rec = torch.mean(torch.abs(x_real - x_reconst))
+            # Original-to-original domain.
+            x_reconst_id = self.G(x_fake_id, c_org)
+            g_loss_rec_id = torch.mean(torch.abs(x_real - x_reconst_id))
 
-                # Original-to-original domain.
-                x_reconst_id = self.G(x_fake_id, c_org)
-                g_loss_rec_id = torch.mean(torch.abs(x_real - x_reconst_id))
+            # Backward and optimize.
+            g_loss_same = g_loss_fake_id + self.lambda_rec * g_loss_rec_id + self.lambda_cls * g_loss_cls_id + self.lambda_id * g_loss_id
+            loss = g_loss_fake + self.lambda_rec * g_loss_rec + self.lambda_cls * g_loss_cls + g_loss_same
 
-                # Backward and optimize.
-                g_loss_same = g_loss_fake_id + self.lambda_rec * g_loss_rec_id + self.lambda_cls * g_loss_cls_id + self.lambda_id * g_loss_id
-                g_loss = g_loss_fake + self.lambda_rec * g_loss_rec + self.lambda_cls * g_loss_cls + g_loss_same
+            # Logging.
+            loss_dict['G/loss_fake'] = g_loss_fake.item()
+            loss_dict['G/loss_rec'] = g_loss_rec.item()
+            loss_dict['G/loss_cls'] = g_loss_cls.item()
+            loss_dict['G/loss_fake_id'] = g_loss_fake_id.item()
+            loss_dict['G/loss_rec_id'] = g_loss_rec_id.item()
+            loss_dict['G/loss_cls_id'] = g_loss_cls_id.item()
+            loss_dict['G/loss_id'] = g_loss_id.item()
 
-                self.reset_grad()
-                g_loss.backward()
-                self.g_optimizer.step()
+        # =================================================================================== #
+        #                                 4. Miscellaneous                                    #
+        # =================================================================================== #
+        self.log_dict(loss_dict)
 
-                # Logging.
-                loss['G/loss_fake'] = g_loss_fake.item()
-                loss['G/loss_rec'] = g_loss_rec.item()
-                loss['G/loss_cls'] = g_loss_cls.item()
-                loss['G/loss_fake_id'] = g_loss_fake_id.item()
-                loss['G/loss_rec_id'] = g_loss_rec_id.item()
-                loss['G/loss_cls_id'] = g_loss_cls_id.item()
-                loss['G/loss_id'] = g_loss_id.item()
+        # Translate fixed images for debugging.
+        if (batch_idx + 1) % self.sample_step == 0:
+            with torch.no_grad():
+                x_fake_list = [self.x_fixed]
+                for c_fixed in self.c_fixed_list:
+                    x_fake = self.G(self.x_fixed, c_fixed)
+                    difference = torch.abs(x_fake - self.x_fixed) - 1.0
+                    difference_grey = torch.cat(self.num_channels * [torch.mean(difference, dim=1, keepdim=True)],
+                                                dim=1)
+                    x_fake_list.append(x_fake)
+                    x_fake_list.append(difference_grey)
+                x_concat = torch.cat(x_fake_list, dim=3)
+                if self.num_channels > 3:
+                    x_concat = x_concat[:, [3, 2, 1]]  # Pick RGB bands
 
-            # =================================================================================== #
-            #                                 4. Miscellaneous                                    #
-            # =================================================================================== #
+                grid = make_grid(x_concat.data.cpu(), nrow=1, padding=0, normalize=True, range=(-1, 1))
+                self.logger.experiment.add_image('images', grid, batch_idx + 1)
 
-            # Print out training information.
-            if (i + 1) % self.log_step == 0:
-                et = time.time() - start_time
-                et = str(datetime.timedelta(seconds=et))[:-7]
-                log = "Elapsed [{}], Iteration [{}/{}]".format(et, i + 1, self.num_iters)
-                for tag, value in loss.items():
-                    log += ", {}: {:.4f}".format(tag, value)
-                print(log)
+        return loss
 
-                if self.use_tensorboard:
-                    for tag, value in loss.items():
-                        self.tensorboard_writer.add_scalar(tag, value, i + 1)
+    def validation_step(self, batch, batch_idx):
+        x_real, c_org, _, _, _, target = batch
 
-            # Translate fixed images for debugging.
-            if (i + 1) % self.sample_step == 0:
-                with torch.no_grad():
-                    x_fake_list = [x_fixed]
-                    for c_fixed in c_fixed_list:
-                        x_fake = self.G(x_fixed, c_fixed)
-                        difference = torch.abs(x_fake - x_fixed) - 1.0
-                        difference_grey = torch.cat(self.num_channels * [torch.mean(difference, dim=1, keepdim=True)],
-                                                    dim=1)
-                        x_fake_list.append(x_fake)
-                        x_fake_list.append(difference_grey)
-                    x_concat = torch.cat(x_fake_list, dim=3)
-                    if self.num_channels > 3:
-                        x_concat = x_concat[:, [3, 2, 1]]  # Pick RGB bands
+        difference = self.compute_difference_map(x_real)
+        prediction = (difference > self.threshold).cpu().to(torch.uint8)
 
-                    if self.use_tensorboard:
-                        grid = make_grid(x_concat.data.cpu(), nrow=1, padding=0, normalize=True, range=(-1, 1))
-                        self.tensorboard_writer.add_image('images', grid, i + 1)
-                    else:
-                        sample_path = os.path.join(self.sample_dir, '{}-images.jpg'.format(i + 1))
-                        save_image(x_concat.data.cpu(), sample_path, nrow=1, padding=0, normalize=True, range=(-1, 1))
-                        print('Saved real and fake images into {}...'.format(sample_path))
+        target = target.view(-1)
+        valid_mask = target > 0
+        prediction = prediction[valid_mask]
+        target = target[valid_mask] - 1
 
-            # Save model checkpoints.
-            if (i + 1) % self.model_save_step == 0:
-                val_acc, val_iou, val_f1 = self.validation()
-                if self.use_tensorboard:
-                    self.tensorboard_writer.add_scalar('val/acc', val_acc, i + 1)
-                    self.tensorboard_writer.add_scalar('val/iou', val_iou, i + 1)
-                    self.tensorboard_writer.add_scalar('val/f1', val_f1, i + 1)
-                is_best = val_f1 > self.best_val_f1
-                if is_best:
-                    print('Validation F1 improved from {:.3f} to {:.3f}'.format(self.best_val_f1, val_f1))
-                    self.best_val_f1 = val_f1
-                else:
-                    print('Validation F1 did not improve from {:.3f}'.format(self.best_val_f1))
+        self.metrics_val(prediction, target)
 
-                state = {
-                    'G': self.G.state_dict(),
-                    'D': self.D.state_dict(),
-                    'val_f1': val_f1,
-                    'best_val_f1': self.best_val_f1,
-                }
+    def on_validation_end(self):
+        metrics = self.metrics_val.compute()
+        self.log_dict(metrics)
 
-                torch.save(state, os.path.join(self.model_save_dir, '{}-model.ckpt'.format(i + 1)))
-                if is_best:
-                    torch.save(state, os.path.join(self.model_save_dir, 'best-model.ckpt'))
-                print('Saved model checkpoints into {}...'.format(self.model_save_dir))
+    # Alternating schedule for optimizer steps (i.e.: GANs)
+    def optimizer_step(self, epoch, batch_idx, optimizer, optimizer_idx,
+                       optimizer_closure, on_tpu, using_native_amp, using_lbfgs):
+        # update generator opt every step
+        if optimizer_idx == 0:
+            optimizer.step(closure=optimizer_closure)
 
-            # Decay learning rates.
-            if (i + 1) % self.lr_update_step == 0 and (i + 1) > (self.num_iters - self.num_iters_decay):
-                g_lr -= (self.g_lr / float(self.num_iters_decay))
-                d_lr -= (self.d_lr / float(self.num_iters_decay))
-                self.update_lr(g_lr, d_lr)
-                print('Decayed learning rates, g_lr: {}, d_lr: {}.'.format(g_lr, d_lr))
+        # update discriminator opt every 2 steps
+        if optimizer_idx == 1:
+            if (batch_idx + 1) % self.n_critic == 0:
+                optimizer.step(closure=optimizer_closure)
+            else:
+                # call the closure by itself to run `training_step` + `backward` without an optimizer step
+                optimizer_closure()
 
     def binarize(self, difference, threshold=0.2):
         return (difference > threshold).astype(np.uint8)
-
-    @torch.no_grad()
-    def validation(self):
-        cm = np.zeros((2, 2))
-        for i, sample in enumerate(tqdm(self.val_loader, 'Validation')):
-            x_real, c_org, target = sample['image'], sample['label'], sample['mask']
-            x_real = x_real.to(device=self.device)
-
-            difference = self.compute_difference_map(x_real)
-            prediction = (difference > self.threshold).cpu().numpy().astype(np.uint8)
-
-            target = target.numpy().flatten()
-            valid_mask = target > 0
-            prediction = prediction[valid_mask]
-            target = target[valid_mask] - 1
-
-            cm += metrics.compute_confusion_matrix(prediction, target, num_classes=2)
-
-        acc, iou, f1 = metrics.accuracy(cm), metrics.iou_score(cm), metrics.f1_score(cm)
-        print('Validation Result: Accuracy={:.2%}, IoU={:.4}, F1={:.4}'.format(acc, iou, f1))
-
-        return acc, iou, f1
 
     @torch.no_grad()
     def find_best_threshold(self, seed=42, n_samples=10000, n_thresholds=30):
@@ -467,7 +423,7 @@ class FCDSolver(object):
 
     def visualize_predictions_sparcs(self):
         """Visualize input data for debugging."""
-        self.restore_model(self.test_iters)
+        #self.restore_model(self.test_iters)
 
         batch_size = 1
         dataset = get_loader('/media/data/SPARCS', batch_size=batch_size, dataset='L8Sparcs', mode='test',
@@ -536,7 +492,7 @@ class FCDSolver(object):
         plt.show()
 
     def visualize_translations(self):
-        self.restore_model(self.test_iters)
+        #self.restore_model(self.test_iters)
         data_loader = get_loader(self.config.l8biome_image_dir, 1, 'L8Biome', 'train', self.config.num_workers,
                                  self.config.num_channels, shuffle=True)
         # data_loader = get_loader('/media/data/SPARCS', batch_size=1, dataset='L8Sparcs', mode='train', num_channels=10)

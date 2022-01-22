@@ -10,6 +10,37 @@ import random
 import numpy as np
 from albumentations.pytorch.transforms import ToTensorV2
 
+import pytorch_lightning as pl
+
+
+class PLL8BiomeDataset(pl.LightningDataModule):
+    def __init__(self, config):
+        super().__init__()
+        self.config = config
+
+    def train_dataloader(self):
+        return get_loader(self.config.l8biome_image_dir, self.config.batch_size,
+                          'L8Biome', 'train', self.config.num_workers, self.config.num_channels)
+
+    def val_dataloader(self):
+        return get_loader(self.config.l8biome_image_dir, self.config.batch_size,
+                          'L8Biome', 'val', self.config.num_workers, self.config.num_channels, mask_file='mask.tif')
+
+    def on_before_batch_transfer(self, batch, dataloader_idx):
+        x_real, label_org = batch['image'], batch['label']
+        if 'mask' in batch:
+            mask = batch['mask']
+        else:
+            mask = None
+
+        rand_idx = torch.randperm(label_org.size(0))
+        label_trg = label_org[rand_idx]
+
+        c_org = label_org.clone()
+        c_trg = label_trg.clone()
+
+        return x_real, c_org, c_trg, label_org, label_trg, mask
+
 
 class PatchDataset(data.Dataset):
     def __init__(self, x, patch_size, crop_size, transforms):

@@ -7,6 +7,9 @@ from fcd_solver import FCDSolver
 from data_loader import get_loader
 from torch.backends import cudnn
 import evaluate
+import pytorch_lightning as pl
+from pytorch_lightning.loggers import TensorBoardLogger
+from data_loader import PLL8BiomeDataset
 from supervised_solver import SupervisedSolver
 
 
@@ -16,7 +19,6 @@ def str2bool(v):
 
 def main(config):
     # For fast training.
-    cudnn.benchmark = True
 
     # Create directories if not exist.
     if not os.path.exists(config.model_save_dir):
@@ -33,7 +35,18 @@ def main(config):
     solver = FCDSolver(config)
 
     if config.mode == 'train':
-        solver.train()
+        data = PLL8BiomeDataset(config)
+
+        lrm = pl.callbacks.LearningRateMonitor()
+        ms = pl.callbacks.ModelSummary(max_depth=10)
+        cpt = pl.callbacks.ModelCheckpoint(config.model_save_dir, monitor='val/F1Score', mode='max')
+
+        logger = TensorBoardLogger('runs', name=config.experiment_name)
+
+        trainer = pl.Trainer(logger, accelerator="gpu", devices=config.n_gpus, callbacks=[lrm, ms, cpt],
+                             check_val_every_n_epoch=1, strategy="ddp" if config.n_gpus > 1 else None,
+                             max_steps=config.num_iters, benchmark=True, fast_dev_run=False)
+        trainer.fit(solver, datamodule=data)
     elif config.mode == 'test':
         solver.make_psuedo_masks()
         # evaluate.test_landsat8_biome(solver, config)
@@ -79,6 +92,8 @@ if __name__ == '__main__':
     parser.add_argument('--use_tensorboard', type=str2bool, default=True)
     parser.add_argument('--device', type=str, default='cuda' if torch.cuda.is_available() else 'cpu',
                         help='specify device, e.g. cuda:0 to use GPU 0')
+    parser.add_argument('--n_gpus', type=int, default=1,
+                        help='specify number of gpus')
     parser.add_argument('--experiment_name', type=str, default=None)
 
     # Directories.
