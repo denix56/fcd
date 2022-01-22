@@ -95,7 +95,7 @@ class FCDSolver(pl.LightningModule):
         self.save_hyperparameters(config)
 
         self.example_input_array = {'image': torch.zeros(1, self.num_channels, self.image_size, self.image_size),
-                                    'label': torch.zeros(1, self.c_dim)}
+                                    'label': torch.zeros(1, self.c_dim).squeeze(1)}
 
         # Build the model and tensorboard.
         self.build_model()
@@ -257,8 +257,6 @@ class FCDSolver(pl.LightningModule):
         #                             1. Preprocess input data                                #
         # =================================================================================== #
         x_real, c_org, c_trg, label_org, label_trg, _ = batch
-        label_org = label_org.unsqueeze(-1)
-        label_trg = label_trg.unsqueeze(-1)
         loss_dict = {}
 
         if optimizer_idx == 0:

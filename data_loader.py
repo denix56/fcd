@@ -29,6 +29,8 @@ class PLL8BiomeDataset(pl.LightningDataModule):
 
     def on_before_batch_transfer(self, batch, dataloader_idx):
         x_real, label_org = batch['image'], batch['label']
+        if len(label_org.shape) == 1:
+            label_org = label_org.unsqueeze_(1)
         if 'mask' in batch:
             mask = batch['mask']
         else:
