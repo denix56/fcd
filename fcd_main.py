@@ -45,7 +45,7 @@ def main(config):
 
         trainer = pl.Trainer(logger, accelerator="gpu", devices=config.n_gpus, callbacks=[lrm, ms, cpt],
                              check_val_every_n_epoch=1, strategy="ddp" if config.n_gpus > 1 else None,
-                             max_steps=config.num_iters, benchmark=True, fast_dev_run=False)
+                             max_steps=config.num_iters, benchmark=True, fast_dev_run=True)
         trainer.fit(solver, datamodule=data)
     elif config.mode == 'test':
         solver.make_psuedo_masks()

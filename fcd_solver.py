@@ -78,7 +78,6 @@ class FCDSolver(pl.LightningModule):
 
         # Miscellaneous.
         self.use_tensorboard = config.use_tensorboard
-        self.device = torch.device(config.device)
         self.mode = config.mode
         self.config = config
 
