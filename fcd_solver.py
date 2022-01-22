@@ -94,8 +94,8 @@ class FCDSolver(pl.LightningModule):
 
         self.save_hyperparameters(config)
 
-        self.example_input_array = {'image': torch.zeros(1, self.c_dim, self.image_size, self.image_size),
-                                    'label': torch.zeros(1, 1)}
+        self.example_input_array = {'image': torch.zeros(1, self.num_channels, self.image_size, self.image_size),
+                                    'label': torch.zeros(1, self.c_dim)}
 
         # Build the model and tensorboard.
         self.build_model()
