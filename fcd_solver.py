@@ -150,7 +150,7 @@ class FCDSolver(pl.LightningModule):
         return opt_D, opt_G
 
     def forward(self, batch):
-        x_real, c_trg = batch
+        x_real, _, c_trg, _, _, _ = batch
         x_fake = self.G(x_real, c_trg)
         out_src, out_cls = self.D(x_fake)
 
