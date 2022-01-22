@@ -104,7 +104,7 @@ class L8BiomeDataset(data.Dataset):
 
         out = {
             'patch_name': patch_name,
-            'label': torch.tensor(label).long(),
+            'label': torch.tensor(label).float(),
         }
         if self.return_mask:
             # 0 = invalid, 1 = clear, 2 = clouds
