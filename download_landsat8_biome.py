@@ -17,7 +17,7 @@ def download_landsat8_biome():
     cur_biome = 0
     for line in response:
         if 'https://landsat.usgs.gov/cloud-validation/cca' in str(line) and 'tar' in str(line):
-            biome_url = str(line)[41:118]
+            biome_url = str(line)[47:124]
             data_urls[biomes[cur_biome]].append(biome_url)
 
         if len(data_urls[biomes[cur_biome]]) == 12:

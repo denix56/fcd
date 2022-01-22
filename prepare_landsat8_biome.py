@@ -74,7 +74,7 @@ def prepare_patches(config):
         Image.fromarray(thumbnail).save(
             str(thumbnail_dir / '{}_thumbnail_{}_{}.jpg'.format(split, image.biome, image.name)))
 
-        if split is 'test':
+        if split == 'test':
             continue  # use raw images for testing instead of patches
 
         for row, col in patches:
