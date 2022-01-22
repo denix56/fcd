@@ -248,6 +248,8 @@ class FCDSolver(pl.LightningModule):
         #                             1. Preprocess input data                                #
         # =================================================================================== #
         x_real, c_org, c_trg, label_org, label_trg = batch
+        label_org = label_org.unsqueeze(-1)
+        label_trg = label_trg.unsqueeze(-1)
         loss_dict = {}
 
         if optimizer_idx == 0:
