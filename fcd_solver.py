@@ -26,7 +26,7 @@ from models.fixed_point_gan import Generator
 import pytorch_lightning as pl
 
 from torchmetrics import MetricCollection
-from torchmetrics import JaccardIndex, Accuracy, F1Score
+from torchmetrics import JaccardIndex, Accuracy, F1Score, ConfusionMatrix
 
 
 class FCDSolver(pl.LightningModule):
@@ -108,6 +108,8 @@ class FCDSolver(pl.LightningModule):
         self.metrics_val = MetricCollection([Accuracy(num_classes=2, average='macro', compute_on_step=False),
                                              JaccardIndex(num_classes=2, compute_on_step=False),
                                              F1Score(num_classes=2, average='macro', compute_on_step=False)], prefix='val/')
+
+        self.conf_matrix = ConfusionMatrix(num_classes=2, compute_on_step=False)
 
     def build_model(self):
         """Create a generator and a discriminator."""
@@ -232,7 +234,7 @@ class FCDSolver(pl.LightningModule):
 
 
     def on_train_start(self):
-        data_loader = self.trainer.datamodule.train_dataloader()
+        data_loader = self.trainer.datamodule.val_dataloader()
 
         # Fetch fixed inputs for debugging.
         data_iter = iter(data_loader)
@@ -361,11 +363,21 @@ class FCDSolver(pl.LightningModule):
         prediction = prediction[valid_mask]
         target = target[valid_mask] - 1
 
+        self.conf_matrix(prediction, target)
+
         self.metrics_val(prediction, target)
 
-    def validation_step_end(self, val_step_outputs):
+    def validation_epoch_end(self, val_step_outputs):
         metrics = self.metrics_val.compute()
         self.log_dict(metrics)
+        self.metrics_val.reset()
+
+        cm = self.conf_matrix.compute().cpu().numpy()
+
+        if self.global_rank == 0:
+            acc, iou, f1 = metrics.accuracy(cm), metrics.iou_score(cm), metrics.f1_score(cm)
+            print('Validation Result: Accuracy={:.2%}, IoU={:.4}, F1={:.4}'.format(acc, iou, f1))
+        self.conf_matrix.reset()
 
     # Alternating schedule for optimizer steps (i.e.: GANs)
     def optimizer_step(self, epoch, batch_idx, optimizer, optimizer_idx,
