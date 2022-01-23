@@ -122,7 +122,6 @@ class FCDSolver(pl.LightningModule):
         #     self.print_network(self.D, 'D')
 
     def configure_optimizers(self):
-        milestones = np.arange(self.lr_update_step, self.num_iters_decay, self.lr_update_step)
 
         def lr_func(step):
             return 1 - max(0, (step + 1 - (self.num_iters - self.num_iters_decay))) // self.lr_update_step / float(self.num_iters_decay)
@@ -330,24 +329,27 @@ class FCDSolver(pl.LightningModule):
         self.log_dict(loss_dict)
 
         # Translate fixed images for debugging.
-        if (batch_idx + 1) % self.sample_step == 0:
-            with torch.no_grad():
-                x_fake_list = [self.x_fixed]
-                for c_fixed in self.c_fixed_list:
-                    x_fake = self.G(self.x_fixed, c_fixed)
-                    difference = torch.abs(x_fake - self.x_fixed) - 1.0
-                    difference_grey = torch.cat(self.num_channels * [torch.mean(difference, dim=1, keepdim=True)],
-                                                dim=1)
-                    x_fake_list.append(x_fake)
-                    x_fake_list.append(difference_grey)
-                x_concat = torch.cat(x_fake_list, dim=3)
-                if self.num_channels > 3:
-                    x_concat = x_concat[:, [3, 2, 1]]  # Pick RGB bands
-
-                grid = make_grid(x_concat.data.cpu(), nrow=1, padding=0, normalize=True, range=(-1, 1))
-                self.logger.experiment.add_image('images', grid, self.global_step)
+        if (self.global_step + 1) % self.sample_step == 0:
+            self.visualize()
 
         return loss
+
+    def visualize(self):
+        with torch.no_grad():
+            x_fake_list = [self.x_fixed]
+            for c_fixed in self.c_fixed_list:
+                x_fake = self.G(self.x_fixed, c_fixed)
+                difference = torch.abs(x_fake - self.x_fixed) - 1.0
+                difference_grey = torch.cat(self.num_channels * [torch.mean(difference, dim=1, keepdim=True)],
+                                            dim=1)
+                x_fake_list.append(x_fake)
+                x_fake_list.append(difference_grey)
+            x_concat = torch.cat(x_fake_list, dim=3)
+            if self.num_channels > 3:
+                x_concat = x_concat[:, [3, 2, 1]]  # Pick RGB bands
+
+            grid = make_grid(x_concat.data.cpu(), nrow=1, padding=0, normalize=True, range=(-1, 1))
+            self.logger.experiment.add_image('images', grid, self.global_step)
 
     def validation_step(self, batch, batch_idx):
         x_real, c_org, _, _, _, target = batch
