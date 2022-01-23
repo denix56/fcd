@@ -358,7 +358,6 @@ class FCDSolver(pl.LightningModule):
         difference = self.compute_difference_map(x_real)
         prediction = (difference > self.threshold).cpu().to(torch.uint8)
 
-        target = target.view(-1)
         valid_mask = target > 0
         prediction = prediction[valid_mask]
         target = target[valid_mask] - 1
