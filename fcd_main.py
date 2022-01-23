@@ -40,10 +40,11 @@ def main(config):
         lrm = pl.callbacks.LearningRateMonitor()
         ms = pl.callbacks.ModelSummary(max_depth=10)
         cpt = pl.callbacks.ModelCheckpoint(config.model_save_dir, monitor='val/F1Score', mode='max')
+        dsm = pl.callbacks.DeviceStatsMonitor()
 
         logger = TensorBoardLogger('runs', name=config.experiment_name, log_graph=True)
 
-        trainer = pl.Trainer(logger, accelerator="gpu", devices=config.n_gpus, callbacks=[lrm, ms, cpt],
+        trainer = pl.Trainer(logger, accelerator="gpu", devices=config.n_gpus, callbacks=[lrm, ms, cpt, dsm],
                              check_val_every_n_epoch=config.val_n_epoch, strategy="ddp" if config.n_gpus > 1 else None,
                              max_steps=config.num_iters, benchmark=True, fast_dev_run=False,
                              precision=16 if config.mixed else 32)

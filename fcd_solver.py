@@ -372,8 +372,8 @@ class FCDSolver(pl.LightningModule):
         if optimizer_idx == 0:
             optimizer.step(closure=optimizer_closure)
 
-        # update discriminator opt every 2 steps
-        if optimizer_idx == 1:
+        # update discriminator opt every n_critic steps
+        elif optimizer_idx == 1:
             if (batch_idx + 1) % self.n_critic == 0:
                 optimizer.step(closure=optimizer_closure)
             else:
