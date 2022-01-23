@@ -1,6 +1,7 @@
 from glob import glob
 
-from albumentations import HorizontalFlip, Normalize, Compose
+from albumentations import HorizontalFlip, VerticalFlip, RandomBrightnessContrast, Normalize, Compose
+from albumentations.augmentations.geometric.rotate import Rotate
 from tifffile import tifffile
 from torch.utils import data
 from PIL import Image
@@ -193,7 +194,10 @@ def get_loader(image_dir, batch_size=16, dataset='L8Biome', mode='train',
     """Build and return a data loader."""
     transform = []
     if mode == 'train' and not force_no_aug:
+        transform.append(RandomBrightnessContrast(brightness_limit=0.1, contrast_limit=0.1, p=0.2))
         transform.append(HorizontalFlip())
+        transform.append(VerticalFlip())
+        transform.append(Rotate())
     transform.append(Normalize(mean=(0.5,) * num_channels, std=(0.5,) * num_channels, max_pixel_value=2 ** 16 - 1))
     transform.append(ToTensorV2())
     transform = Compose(transform)

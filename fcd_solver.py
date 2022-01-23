@@ -125,10 +125,7 @@ class FCDSolver(pl.LightningModule):
         milestones = np.arange(self.lr_update_step, self.num_iters_decay, self.lr_update_step)
 
         def lr_func(step):
-            if (step + 1) % self.lr_update_step == 0 and (step + 1) > (self.num_iters - self.num_iters_decay):
-                return 1 - (step + 1) / self.lr_update_step / float(self.num_iters_decay)
-            else:
-                return 1
+            return 1 - (step + 1 - (self.num_iters - self.num_iters_decay)) // self.lr_update_step / float(self.num_iters_decay)
 
         # TODO: add self.num_iters_decay
         opt_D = torch.optim.Adam(self.D.parameters(), self.d_lr, (self.beta1, self.beta2))
