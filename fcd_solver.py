@@ -374,8 +374,8 @@ class FCDSolver(pl.LightningModule):
         self.metrics_val(prediction, target)
 
     def validation_epoch_end(self, val_step_outputs):
-        metrics = self.metrics_val.compute()
-        self.log_dict(metrics)
+        metrics_dict = self.metrics_val.compute()
+        self.log_dict(metrics_dict)
         self.metrics_val.reset()
 
         cm = self.conf_matrix.compute().cpu().numpy()
