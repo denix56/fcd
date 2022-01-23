@@ -364,7 +364,7 @@ class FCDSolver(pl.LightningModule):
 
         self.metrics_val(prediction, target)
 
-    def on_validation_end(self):
+    def validation_step_end(self, val_step_outputs):
         metrics = self.metrics_val.compute()
         self.log_dict(metrics)
 
