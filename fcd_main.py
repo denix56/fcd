@@ -44,8 +44,9 @@ def main(config):
         logger = TensorBoardLogger('runs', name=config.experiment_name, log_graph=True)
 
         trainer = pl.Trainer(logger, accelerator="gpu", devices=config.n_gpus, callbacks=[lrm, ms, cpt],
-                             check_val_every_n_epoch=1, strategy="ddp" if config.n_gpus > 1 else None,
-                             max_steps=config.num_iters, benchmark=True, fast_dev_run=False)
+                             check_val_every_n_epoch=config.val_n_epoch, strategy="ddp" if config.n_gpus > 1 else None,
+                             max_steps=config.num_iters, benchmark=True, fast_dev_run=False,
+                             precision=16 if config.mixed else 32)
         trainer.fit(solver, datamodule=data)
     elif config.mode == 'test':
         solver.make_psuedo_masks()
@@ -108,6 +109,8 @@ if __name__ == '__main__':
     parser.add_argument('--sample_step', type=int, default=1000)
     parser.add_argument('--model_save_step', type=int, default=10000)
     parser.add_argument('--lr_update_step', type=int, default=1000)
+    parser.add_argument('--val_n_epoch', type=int, default=1)
+    parser.add_argument('--mixed', action='store_true', help='Use mixed precision')
 
     config = parser.parse_args()
 
