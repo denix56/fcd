@@ -345,7 +345,7 @@ class FCDSolver(pl.LightningModule):
                     x_concat = x_concat[:, [3, 2, 1]]  # Pick RGB bands
 
                 grid = make_grid(x_concat.data.cpu(), nrow=1, padding=0, normalize=True, range=(-1, 1))
-                self.logger.experiment.add_image('images', grid, batch_idx + 1)
+                self.logger.experiment.add_image('images', grid, self.global_step)
 
         return loss
 
