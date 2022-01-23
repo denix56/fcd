@@ -105,9 +105,9 @@ class FCDSolver(pl.LightningModule):
         self.x_fixed = None
         self.c_fixed_list = None
 
-        self.metrics_val = MetricCollection([Accuracy(num_classes=2, compute_on_step=False),
+        self.metrics_val = MetricCollection([Accuracy(num_classes=2, average='macro', compute_on_step=False),
                                              JaccardIndex(num_classes=2, compute_on_step=False),
-                                             F1Score(num_classes=2, compute_on_step=False)], prefix='val/')
+                                             F1Score(num_classes=2, average='macro', compute_on_step=False)], prefix='val/')
 
     def build_model(self):
         """Create a generator and a discriminator."""
@@ -370,11 +370,11 @@ class FCDSolver(pl.LightningModule):
     # Alternating schedule for optimizer steps (i.e.: GANs)
     def optimizer_step(self, epoch, batch_idx, optimizer, optimizer_idx,
                        optimizer_closure, on_tpu, using_native_amp, using_lbfgs):
-        # update generator opt every step
+        # update discriminator opt every step
         if optimizer_idx == 0:
             optimizer.step(closure=optimizer_closure)
 
-        # update discriminator opt every n_critic steps
+        # update generator opt every n_critic steps
         elif optimizer_idx == 1:
             if (batch_idx + 1) % self.n_critic == 0:
                 optimizer.step(closure=optimizer_closure)
