@@ -336,22 +336,28 @@ class FCDSolver(pl.LightningModule):
 
         return loss
 
+    @torch.no_grad()
     def visualize(self):
-        with torch.no_grad():
-            x_fake_list = [self.x_fixed]
-            for c_fixed in self.c_fixed_list:
-                x_fake = self.G(self.x_fixed, c_fixed)
-                difference = torch.abs(x_fake - self.x_fixed) - 1.0
-                difference_grey = torch.cat(self.num_channels * [torch.mean(difference, dim=1, keepdim=True)],
-                                            dim=1)
-                x_fake_list.append(x_fake)
-                x_fake_list.append(difference_grey)
-            x_concat = torch.cat(x_fake_list, dim=3)
-            if self.num_channels > 3:
-                x_concat = x_concat[:, [3, 2, 1]]  # Pick RGB bands
+        trans = Normalize(mean=[-1]*self.num_channels, std=[2]*self.num_channels, max_pixel_value=1/(2 ** 16 - 1))
 
-            grid = make_grid(x_concat.data.cpu(), nrow=1, padding=0, normalize=True, range=(-1, 1))
-            self.logger.experiment.add_image('images', grid, self.global_step)
+        x_fixed = torch.clamp(trans(self.x_fixed).to(torch.int32) >> 8, 0, 255).to(torch.uint8)
+        x_fake_list = [x_fixed]
+
+        for c_fixed in self.c_fixed_list:
+            x_fake = self.G(self.x_fixed, c_fixed)
+            difference = torch.abs(x_fake - self.x_fixed) - 1.0
+            difference_grey = torch.cat(self.num_channels * [torch.mean(difference, dim=1, keepdim=True)],
+                                        dim=1)
+            x_fake = torch.clamp(trans(x_fake).to(torch.int32) >> 8, 0, 255).to(torch.uint8)
+            x_fake_list.append(x_fake)
+            difference_grey = torch.clamp(torch.round(difference_grey*255), 0, 255).to(torch.uint8)
+            x_fake_list.append(difference_grey)
+        x_concat = torch.cat(x_fake_list, dim=3)
+        if self.num_channels > 3:
+            x_concat = x_concat[:, [3, 2, 1]]  # Pick RGB bands
+
+        grid = make_grid(x_concat.data.cpu(), nrow=1, padding=0, normalize=True, value_range=(0, 255))
+        self.logger.experiment.add_image('images', grid, self.global_step)
 
     def validation_step(self, batch, batch_idx):
         x_real, c_org, _, _, _, target = batch
