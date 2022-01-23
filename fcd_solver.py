@@ -149,7 +149,7 @@ class FCDSolver(pl.LightningModule):
 
         return opt_D, opt_G
 
-    def forward(self, x_real, c_org, c_trg, label_org, label_trg, mask):
+    def forward(self, x_real, c_org, c_trg, label_org, label_trg):
         x_fake = self.G(x_real, c_trg)
         out_src, out_cls = self.D(x_fake)
 
@@ -256,7 +256,7 @@ class FCDSolver(pl.LightningModule):
         # =================================================================================== #
         #                             1. Preprocess input data                                #
         # =================================================================================== #
-        x_real, c_org, c_trg, label_org, label_trg, _ = batch
+        x_real, c_org, c_trg, label_org, label_trg = batch
         loss_dict = {}
 
         if optimizer_idx == 0:

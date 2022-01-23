@@ -31,10 +31,6 @@ class PLL8BiomeDataset(pl.LightningDataModule):
         x_real, label_org = batch['image'], batch['label']
         if len(label_org.shape) == 1:
             label_org = label_org.unsqueeze_(1)
-        if 'mask' in batch:
-            mask = batch['mask']
-        else:
-            mask = None
 
         rand_idx = torch.randperm(label_org.size(0))
         label_trg = label_org[rand_idx]
@@ -42,7 +38,11 @@ class PLL8BiomeDataset(pl.LightningDataModule):
         c_org = label_org.clone()
         c_trg = label_trg.clone()
 
-        return x_real, c_org, c_trg, label_org, label_trg, mask
+        if 'mask' in batch:
+            mask = batch['mask']
+            return x_real, c_org, c_trg, label_org, label_trg, mask
+        else:
+            return x_real, c_org, c_trg, label_org, label_trg
 
 
 class PatchDataset(data.Dataset):
