@@ -128,19 +128,19 @@ class FCDSolver(pl.LightningModule):
 
         # TODO: add self.num_iters_decay
         opt_D = torch.optim.Adam(self.D.parameters(), self.d_lr, (self.beta1, self.beta2))
-        sched_D = torch.optim.lr_scheduler.LambdaLR(opt_D, lambda step: lr_func(step))
+        sched_D = torch.optim.lr_scheduler.ReduceLROnPlateau(opt_D, mode='max')
 
         opt_G = torch.optim.Adam(self.G.parameters(), self.g_lr, (self.beta1, self.beta2))
-        sched_G = torch.optim.lr_scheduler.LambdaLR(opt_G, lambda step: lr_func(step))
+        sched_G = torch.optim.lr_scheduler.ReduceLROnPlateau(opt_G, mode='max')
 
         opt_D = {'optimizer': opt_D,
                  'lr_scheduler': {'scheduler': sched_D,
-                                  'interval': 'step'
+                                  'monitor': 'val/F1Score'
                                   }}
 
         opt_G = {'optimizer': opt_G,
                  'lr_scheduler': {'scheduler': sched_G,
-                                  'interval': 'step'
+                                  'monitor': 'val/F1Score'
                                   }}
 
         return opt_D, opt_G
