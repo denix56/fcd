@@ -239,7 +239,7 @@ class FCDSolver(pl.LightningModule):
         # Fetch fixed inputs for debugging.
         data_iter = iter(data_loader)
         sample_fixed = next(data_iter)
-        x_fixed, c_org, _, _, _ = self.trainer.datamodule.on_before_batch_transfer(sample_fixed, 0)
+        x_fixed, c_org, _, _, _, _ = self.trainer.datamodule.on_before_batch_transfer(sample_fixed, 0)
         print('Number batches in training dataset', len(data_loader))
 
         # Uncomment to visualize input data
