@@ -105,9 +105,9 @@ class FCDSolver(pl.LightningModule):
         self.x_fixed = None
         self.c_fixed_list = None
 
-        self.metrics_val = MetricCollection([Accuracy(num_classes=2, average='macro', compute_on_step=False),
+        self.metrics_val = MetricCollection([Accuracy(num_classes=2, compute_on_step=False),
                                              JaccardIndex(num_classes=2, compute_on_step=False),
-                                             F1Score(num_classes=2, average='macro', compute_on_step=False)], prefix='val/')
+                                             F1Score(num_classes=2, compute_on_step=False)], prefix='val/')
 
     def build_model(self):
         """Create a generator and a discriminator."""
@@ -356,7 +356,7 @@ class FCDSolver(pl.LightningModule):
         x_real, c_org, _, _, _, target = batch
 
         difference = self.compute_difference_map(x_real)
-        prediction = (difference > self.threshold).cpu().to(torch.uint8)
+        prediction = (difference > self.threshold).to(torch.uint8)
 
         valid_mask = target > 0
         prediction = prediction[valid_mask]
