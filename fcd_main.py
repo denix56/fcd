@@ -9,12 +9,16 @@ from torch.backends import cudnn
 import evaluate
 from supervised_solver import SupervisedSolver
 
+import pytorch_lightning as pl
+
 
 def str2bool(v):
     return v.lower() in ('true')
 
 
 def main(config):
+    pl.seed_everything(42, workers=True)
+    
     # For fast training.
     cudnn.benchmark = True
 
@@ -93,6 +97,7 @@ if __name__ == '__main__':
     parser.add_argument('--sample_step', type=int, default=1000)
     parser.add_argument('--model_save_step', type=int, default=10000)
     parser.add_argument('--lr_update_step', type=int, default=1000)
+    parser.add_argument('--use_h5', action='store_true', help='Use HDF5 dataset')
 
     config = parser.parse_args()
 

@@ -36,9 +36,9 @@ class FCDSolver(object):
         self.test_loader = None
 
         self.train_loader = get_loader(config.l8biome_image_dir, config.batch_size,
-                                       'L8Biome', 'train', config.num_workers, config.num_channels)
+                                       'L8Biome', 'train', config.num_workers, config.num_channels, use_h5=config.use_h5)
         self.val_loader = get_loader(config.l8biome_image_dir, config.batch_size,
-                                     'L8Biome', 'val', config.num_workers, config.num_channels, mask_file='mask.tif')
+                                     'L8Biome', 'val', config.num_workers, config.num_channels, mask_file='mask.tif', ret_mask=True, use_h5=config.use_h5)
 
         # Model configurations.
         self.c_dim = config.c_dim
@@ -178,8 +178,8 @@ class FCDSolver(object):
         for i in range(c_dim):
             if dataset == 'L8Biome':
                 # Visualize translation to both cloudy and non-cloudy domain
-                c_trg_list.append(torch.zeros_like(c_org).to(self.device))
-                c_trg = torch.ones_like(c_org)
+                c_trg_list.append(torch.zeros_like(c_org.unsqueeze(1)).to(self.device))
+                c_trg = torch.ones_like(c_org.unsqueeze(1))
 
             c_trg_list.append(c_trg.to(self.device))
         return c_trg_list
@@ -243,11 +243,13 @@ class FCDSolver(object):
                 c_trg = label_trg.clone()
 
             x_real = x_real.to(self.device)  # Input images.
-            c_org = c_org.to(self.device)  # Original domain labels.
-            c_trg = c_trg.to(self.device)  # Target domain labels.
+            c_org = c_org.to(self.device).unsqueeze(1).to(torch.float32)  # Original domain labels.
+            c_trg = c_trg.to(self.device).unsqueeze(1).to(torch.float32)  # Target domain labels.
             label_org = label_org.to(self.device)  # Labels for computing classification loss.
             label_trg = label_trg.to(self.device)  # Labels for computing classification loss.
-
+            label_org = label_org.unsqueeze(1).to(torch.float32)
+            label_trg = label_trg.unsqueeze(1).to(torch.float32)
+            
             # =================================================================================== #
             #                             2. Train the discriminator                              #
             # =================================================================================== #
@@ -365,7 +367,7 @@ class FCDSolver(object):
                         print('Saved real and fake images into {}...'.format(sample_path))
 
             # Save model checkpoints.
-            if (i + 1) % self.model_save_step == 0:
+            if (i) % self.model_save_step == 0:
                 val_acc, val_iou, val_f1 = self.validation()
                 if self.use_tensorboard:
                     self.tensorboard_writer.add_scalar('val/acc', val_acc, i + 1)
@@ -408,7 +410,7 @@ class FCDSolver(object):
             x_real = x_real.to(device=self.device)
 
             difference = self.compute_difference_map(x_real)
-            prediction = (difference > self.threshold).cpu().numpy().astype(np.uint8)
+            prediction = (difference > self.threshold).cpu().numpy().astype(np.uint8).flatten()
 
             target = target.numpy().flatten()
             valid_mask = target > 0
