@@ -119,6 +119,7 @@ if __name__ == '__main__':
     parser.add_argument('--act_G', type=str, default='relu', 
     choices=['relu', 'lrelu', 'silu'], help='activation function to use in generator')
     parser.add_argument('--use_h5', action='store_true', help='Use HDF5 dataset')
+    parser.add_argument('--h5_mem', action='store_true', help='Preload the whole dataset to shared memory')
 
     config = parser.parse_args()
 

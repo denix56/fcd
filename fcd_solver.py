@@ -208,12 +208,12 @@ class FCDSolver(pl.LightningModule):
 
 
     def on_train_start(self):
-        data_loader = self.trainer.datamodule.val_dataloader()
+        data_loader = self.trainer.datamodule.train_dataloader()
 
         # Fetch fixed inputs for debugging.
         data_iter = iter(data_loader)
         sample_fixed = next(data_iter)
-        x_fixed, c_org, _, _, _, _ = self.trainer.datamodule.on_before_batch_transfer(sample_fixed, 0)
+        x_fixed, c_org, _, _, _ = self.trainer.datamodule.on_before_batch_transfer(sample_fixed, 0)
         print('Number batches in training dataset', len(data_loader))
 
         # Uncomment to visualize input data
@@ -260,17 +260,17 @@ class FCDSolver(pl.LightningModule):
             loss = d_loss_real + d_loss_fake + self.lambda_cls * d_loss_cls + self.lambda_gp * d_loss_gp
 
             # Logging.
-            loss_dict['D/loss_real'] = d_loss_real.item()
-            loss_dict['D/loss_fake'] = d_loss_fake.item()
-            loss_dict['D/loss_cls'] = d_loss_cls.item()
-            loss_dict['D/loss_gp'] = d_loss_gp.item()
+            loss_dict['D/loss_real'] = d_loss_real
+            loss_dict['D/loss_fake'] = d_loss_fake
+            loss_dict['D/loss_cls'] = d_loss_cls
+            loss_dict['D/loss_gp'] = d_loss_gp
 
         elif optimizer_idx == 1:
             # =================================================================================== #
             #                               3. Train the generator                                #
             # =================================================================================== #
             # Original-to-target domain.
-            if (batch_idx + 1) % self.n_critic == 0:
+            if (self.global_step + 1) % self.n_critic == 0:
                 x_fake = self.G(x_real, c_trg)
                 out_src, out_cls = self.D(x_fake)
                 g_loss_fake = - torch.mean(out_src)
@@ -296,13 +296,13 @@ class FCDSolver(pl.LightningModule):
                 loss = g_loss_fake + self.lambda_rec * g_loss_rec + self.lambda_cls * g_loss_cls + g_loss_same
 
                 # Logging.
-                loss_dict['G/loss_fake'] = g_loss_fake.item()
-                loss_dict['G/loss_rec'] = g_loss_rec.item()
-                loss_dict['G/loss_cls'] = g_loss_cls.item()
-                loss_dict['G/loss_fake_id'] = g_loss_fake_id.item()
-                loss_dict['G/loss_rec_id'] = g_loss_rec_id.item()
-                loss_dict['G/loss_cls_id'] = g_loss_cls_id.item()
-                loss_dict['G/loss_id'] = g_loss_id.item()
+                loss_dict['G/loss_fake'] = g_loss_fake
+                loss_dict['G/loss_rec'] = g_loss_rec
+                loss_dict['G/loss_cls'] = g_loss_cls
+                loss_dict['G/loss_fake_id'] = g_loss_fake_id
+                loss_dict['G/loss_rec_id'] = g_loss_rec_id
+                loss_dict['G/loss_cls_id'] = g_loss_cls_id
+                loss_dict['G/loss_id'] = g_loss_id
             else:
                 loss = None
 
@@ -310,21 +310,20 @@ class FCDSolver(pl.LightningModule):
         #                                 4. Miscellaneous                                    #
         # =================================================================================== #
         self.log_dict(loss_dict)
-        return loss
-        
-        
-    def training_step_end(self, step_output):
-        # Translate fixed images for debugging.
+
         if (self.global_step + 1) % self.sample_step == 0 and self.global_rank == 0:
             self.visualize()
-        
-        if (self.global_step + 1) % self.lr_update_step == 0 and (self.global_step + 1) > (self.num_iters - self.num_iters_decay):
+
+        if (self.global_step + 1) % self.lr_update_step == 0 and (self.global_step + 1) > (
+            self.num_iters - self.num_iters_decay):
             if optimizer_idx == 0:
                 self.d_lr_cached -= (self.d_lr / float(self.num_iters_decay))
             else:
                 self.g_lr_cached -= (self.g_lr / float(self.num_iters_decay))
                 self.update_lr(self.g_lr_cached, self.d_lr_cached)
                 print('Decayed learning rates, g_lr: {}, d_lr: {}.'.format(self.g_lr_cached, self.d_lr_cached))
+
+        return loss
 
 
     @torch.no_grad()
@@ -358,9 +357,8 @@ class FCDSolver(pl.LightningModule):
         self.conf_matrix(prediction, target)
 
         self.metrics_val(prediction, target)
-        self.cm += metrics.compute_confusion_matrix(prediction.numpy().flatten(), target.numpy().flatten(), num_classes=2)
+        self.cm += metrics.compute_confusion_matrix(prediction.cpu().numpy().flatten(), target.cpu().numpy().flatten(), num_classes=2)
 
-            
 
     def validation_epoch_end(self, val_step_outputs):
         metrics_dict = self.metrics_val.compute()
@@ -391,7 +389,9 @@ class FCDSolver(pl.LightningModule):
             else:
                 # call the closure by itself to run `training_step` + `backward` without an optimizer step
                 optimizer_closure()
-                
+
+    def optimizer_zero_grad(self, epoch, batch_idx, optimizer, optimizer_idx):
+        optimizer.zero_grad(set_to_none=True)
 
     def binarize(self, difference, threshold=0.2):
         return (difference > threshold).astype(np.uint8)

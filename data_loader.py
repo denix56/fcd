@@ -28,13 +28,13 @@ class PLL8BiomeDataset(pl.LightningDataModule):
     def train_dataloader(self):
         return get_loader(self.config.l8biome_image_dir, self.config.batch_size,
                           'L8Biome', 'train', self.config.num_workers, self.config.num_channels, 
-                          use_h5=self.config.use_h5, rank=self.trainer.global_rank)
+                          use_h5=self.config.use_h5, shared_mem=self.config.h5_mem, rank=self.trainer.global_rank)
 
     def val_dataloader(self):
         return get_loader(self.config.l8biome_image_dir, self.config.batch_size,
                           'L8Biome', 'val', self.config.num_workers, 
                           self.config.num_channels, mask_file='mask.tif', ret_mask=True,
-                          use_h5=self.config.use_h5, rank=self.trainer.global_rank)
+                          use_h5=self.config.use_h5, shared_mem=self.config.h5_mem, rank=self.trainer.global_rank)
 
     def on_before_batch_transfer(self, batch, dataloader_idx):
         x_real, label_org = batch['image'], batch['label']
@@ -160,7 +160,7 @@ class L8BiomeDataset(data.Dataset):
         
         
 class L8BiomeHDFDataset(data.Dataset):
-    def __init__(self, root, transform, mode='train', ret_mask=True, keep_ratio=1.0, only_cloudy=False, init=False, seed=42):
+    def __init__(self, root, transform, mode='train', ret_mask=True, keep_ratio=1.0, only_cloudy=False, shared=False, seed=42):
         self.root = root
         self.mode = mode
         self.only_cloudy = only_cloudy
@@ -168,46 +168,67 @@ class L8BiomeHDFDataset(data.Dataset):
         self.transform = transform
         self.return_mask = ret_mask        
         self.seed = seed
-        
-        self.image_ds = '{}/{}'.format(self.mode, 'images')
-        self.mask_ds = '{}/{}'.format(self.mode, 'masks')
-        self.label_ds = '{}/{}'.format(self.mode, 'labels')
-        
+        self.shared_mem = shared
+
         self.h5f = None
+        self.images = None
+        self.masks = None
+        self.labels = None
         self.indices = None
+
         self.classes = None
         self.class_to_idx = None
-        self.init_hdf()        
+
+        self.__init_hdf()
+        # Cannot pickle when creating workers
+        self.h5f.close()
+        self.h5f = None
         
-    def init_hdf(self):
+    def __init_hdf(self):
         self.h5f = h5py.File(os.path.join(self.root, 'l8biome.h5'), 'r')
-        self.classes = self.h5f.attrs['classes']
+        self.images = self.h5f['{}/{}'.format(self.mode, 'images')]
+        self.masks = self.h5f['{}/{}'.format(self.mode, 'masks')]
+        self.labels = self.h5f['{}/{}'.format(self.mode, 'labels')]
+        self.classes = self.h5f.attrs['classes'][:]
+
         self.class_to_idx = {self.classes[i]: i for i in range(len(self.classes))}
         
         if self.only_cloudy:
-            self.indices = np.where(self.h5f[self.label_ds][:] == 1)
+            self.indices = np.where(self.labels[:] == 1)
         else:
-            self.indices = np.arange(self.h5f[self.label_ds].shape[0])
+            self.indices = np.arange(self.labels.shape[0])
             
         if self.keep_ratio < 1.0:
             # Subsample images for supervised training on fake images, and fine-tuning on keep_ratio% real images
             print('Dataset size before keep_ratio', self.indices.shape[0])
             np.random.default_rng(self.seed).shuffle(self.indices)  # Ensure we pick the same 1% across experiments
-            self.indices = self.indices[:int(keep_ratio * len(self.images))]
+            self.indices = self.indices[:int(self.keep_ratio * len(self.indices))]
             print('Dataset size after keep_ratio', self.indices.shape[0])
+
+        if self.shared_mem:
+            self.images = torch.from_numpy(self.images[:])
+            self.masks = torch.from_numpy(self.masks[:])
+            self.labels = torch.from_numpy(self.labels[:])
+            self.indices = torch.from_numpy(self.indices)
+
+            self.indices.share_memory_()
+            self.images.share_memory_()
+            self.masks.share_memory_()
+            self.labels.share_memory_()
+
 
     def __getitem__(self, index):
         idx = self.indices[index]
-        image = self.h5f[self.image_ds][idx]
-        label = self.h5f[self.label_ds][idx]
+        image = self.images[idx]
+        label = self.labels[idx]
 
         out = {
             'patch_name': 'patch_{}'.format(idx),
-            'label': torch.tensor(label).float(),
+            'label': torch.as_tensor(label).float(),
         }
         if self.return_mask:
             # 0 = invalid, 1 = clear, 2 = clouds
-            mask = self.h5f[self.mask_ds][idx]
+            mask = self.masks[idx]
             sample = self.transform(image=image, mask=mask)
             out['image'] = sample['image']
             out['mask'] = sample['mask']
@@ -221,7 +242,7 @@ class L8BiomeHDFDataset(data.Dataset):
     @staticmethod
     def worker_init_fn(worker_id, rank=None):
         info = torch.utils.data.get_worker_info()
-        info.dataset.init_hdf()
+        info.dataset.__init_hdf()
         
         pl_worker_init_function(worker_id, rank)
     
@@ -268,7 +289,7 @@ class L8SparcsDataset(data.Dataset):
 def get_loader(image_dir, batch_size=16, dataset='L8Biome', mode='train',
                num_workers=4, num_channels=3, mask_file=None, ret_mask=False, keep_ratio=1.0, 
                shuffle=None, force_no_aug=False, only_cloudy=False, pin_memory=True,
-               use_h5=False, rank=None):
+               use_h5=False, shared_mem=False, rank=None):
     """Build and return a data loader."""
     transform = []
     if mode == 'train' and not force_no_aug:
@@ -285,8 +306,8 @@ def get_loader(image_dir, batch_size=16, dataset='L8Biome', mode='train',
     if use_h5:
         if dataset == 'L8Biome':
             dataset = L8BiomeHDFDataset(image_dir, transform, mode, 
-                  ret_mask=ret_mask, keep_ratio=keep_ratio, only_cloudy=only_cloudy)
-            worker_init_fn = partial(L8BiomeHDFDataset.worker_init_fn, rank=rank)
+                  ret_mask=ret_mask, keep_ratio=keep_ratio, only_cloudy=only_cloudy, shared=shared_mem)
+            worker_init_fn = partial(L8BiomeHDFDataset.worker_init_fn, rank=rank) if not shared_mem else None
         else:
             raise NotImplementedError()
         
@@ -302,5 +323,6 @@ def get_loader(image_dir, batch_size=16, dataset='L8Biome', mode='train',
                                   shuffle=(mode == 'train') if shuffle is None else shuffle,
                                   num_workers=num_workers,
                                   worker_init_fn=worker_init_fn,
+                                  persistent_workers=num_workers>0,
                                   pin_memory=pin_memory)
     return data_loader
