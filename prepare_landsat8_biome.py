@@ -12,6 +12,28 @@ import tifffile
 from PIL import Image
 from matplotlib import pyplot as plt
 from tqdm import tqdm
+import h5py
+import joblib
+from joblib import Parallel, delayed
+import contextlib
+from multiprocessing import Value
+
+
+@contextlib.contextmanager
+def tqdm_joblib(tqdm_object):
+    """Context manager to patch joblib to report into tqdm progress bar given as argument"""
+    class TqdmBatchCompletionCallback(joblib.parallel.BatchCompletionCallBack):
+        def __call__(self, *args, **kwargs):
+            tqdm_object.update(n=self.batch_size)
+            return super().__call__(*args, **kwargs)
+
+    old_batch_callback = joblib.parallel.BatchCompletionCallBack
+    joblib.parallel.BatchCompletionCallBack = TqdmBatchCompletionCallback
+    try:
+        yield tqdm_object
+    finally:
+        joblib.parallel.BatchCompletionCallBack = old_batch_callback
+        tqdm_object.close()
 
 
 BANDS_30M = [
@@ -55,45 +77,121 @@ def prepare_patches(config):
             x = images[idx]
             line = "{},{},{}\n".format(split, x.biome, x.name)
             f.write(line)
+    
+    train_size = 0
+    val_size = 0
+    
+    print('Computing file sizes...')
+    
+    with tqdm_joblib(tqdm(desc='Reading L8 tile (1st run)', total=len(images))) as progress_bar:
+        def work_func(img_idx, image):
+            split = train_val_test[img_idx]
+            x, mask = read_image(image)
+            assert x.dtype == np.uint16
+            
+            height, width, _ = x.shape
+            patches = list(product(range(0, patch_size * (height // patch_size), patch_size),
+                                   range(0, patch_size * (width // patch_size), patch_size)))
 
-    patch_ids = {'train': 0, 'val': 0, 'test': 0}
+            if split == 'test':
+                return 0, 0 # use raw images for testing instead of patches
+                
+            count = 0
+                
+            for row, col in patches:
+                #patch_x = x[row:row + patch_size, col:col + patch_size]
+                patch_mask = mask[row:row + patch_size, col:col + patch_size]
+                if (patch_mask == 0).all():  # ignore completely invalid patches
+                    continue
+                
+                count += 1
+            
+            train_count = 0
+            val_count = 0
+            
+            if split == 'train':
+                train_count = count
+            else:
+                val_count = count
+            return train_count, val_count
+        
+        result = np.array(Parallel(n_jobs=config.num_workers)(delayed(work_func)(img_idx, image) for img_idx, image in enumerate(images)))
+    train_size, val_size = zip(*result)
+    train_size = np.sum(train_size)
+    val_size = np.sum(val_size)
+    
+    h5file = 'l8biome.h5'
+    
+    print('Train patches: {}, validation patches: {}'.format(train_size, val_size))
+    
+    # in train part
+    num_cloudy = Value('i', 0)
+    num_clear = Value('i', 0)   
+    
+    with h5py.File(h5file, 'w') as h5f:
+        h5py.attrs.create('classes', ['clear', 'cloudy'])
+        
+        ds = {}
+        for split, size in zip(['train', 'val'], [train_size, val_size]):
+            grp = h5f.create_group(split)
+            ds[split] = {
+                'images': grp.create_dataset('images', shape=(size, patch_size, patch_size, 10), dtype=np.uint16),
+                'masks': grp.create_dataset('masks', shape=(size, patch_size, patch_size), dtype=np.uint8),
+                'labels': grp.create_dataset('labels', shape=(size,), dtype=np.uint8),
+                'counter_processed': Value('i', 0)
+            }
+        
+        with tqdm_joblib(tqdm(desc='Reading L8 tile (2nd run)', total=len(images))) as progress_bar:
+            def work_func(img_idx, image):
+                split = train_val_test[img_idx]
+                x, mask = read_image(image)
+                assert x.dtype == np.uint16
 
-    for img_idx, image in enumerate(tqdm(images, desc='Reading L8 tile')):
-        split = train_val_test[img_idx]
-        split_dir = output_path / split
-        x, mask = read_image(image)
-        assert x.dtype == np.uint16
+                height, width, _ = x.shape
+                patches = list(product(range(0, patch_size * (height // patch_size), patch_size),
+                                       range(0, patch_size * (width // patch_size), patch_size)))
 
-        height, width, _ = x.shape
-        patches = list(product(range(0, patch_size * (height // patch_size), patch_size),
-                               range(0, patch_size * (width // patch_size), patch_size)))
+                # Create thumbnail of full image for debugging
+                thumbnail = np.clip(1.5 * (x[..., [3, 2, 1]].copy() >> 8), 0, 255).astype(np.uint8)
+                thumbnail = cv2.resize(thumbnail, (1000, 1000))
+                Image.fromarray(thumbnail).save(
+                    str(thumbnail_dir / '{}_thumbnail_{}_{}.jpg'.format(split, image.biome, image.name)))
 
-        # Create thumbnail of full image for debugging
-        thumbnail = np.clip(1.5 * (x[..., [3, 2, 1]].copy() >> 8), 0, 255).astype(np.uint8)
-        thumbnail = cv2.resize(thumbnail, (1000, 1000))
-        Image.fromarray(thumbnail).save(
-            str(thumbnail_dir / '{}_thumbnail_{}_{}.jpg'.format(split, image.biome, image.name)))
+                if split == 'test':
+                    return 0, 0  # use raw images for testing instead of patches
+                    
+                num_cloudy = 0
+                num_clear = 0
 
-        if split == 'test':
-            continue  # use raw images for testing instead of patches
+                for row, col in patches:
+                    patch_x = x[row:row + patch_size, col:col + patch_size]
+                    patch_mask = mask[row:row + patch_size, col:col + patch_size]
+                    if (patch_mask == 0).all():  # ignore completely invalid patches
+                        continue
 
-        for row, col in patches:
-            patch_x = x[row:row + patch_size, col:col + patch_size]
-            patch_mask = mask[row:row + patch_size, col:col + patch_size]
-            if (patch_mask == 0).all():  # ignore completely invalid patches
-                continue
+                    label = 1 if (patch_mask == 2).any() else 0
+                    
+                    if split == 'train':
+                        if label == 1:
+                            num_cloudy += 1
+                        else:
+                            num_clear += 1
+                    
+                    with ds[split]['counter_processed'].get_lock():
+                        ds_idx = ds[split]['counter_processed'].value
+                        ds[split]['counter_processed'].value += 1
+                    ds[split]['images'][ds_idx] = patch_x
+                    ds[split]['masks'][ds_idx] = patch_mask
+                    ds[split]['labels'][ds_idx] = label
+                    
+                return num_cloudy, num_clear
+                
+            result = Parallel(n_jobs=config.num_workers, backend='threading')(delayed(work_func)(img_idx, image) for img_idx, image in enumerate(images))
 
-            label = 'cloudy' if (patch_mask == 2).any() else 'clear'
+        num_cloudy, num_clear = zip(*result)
+        num_cloudy = np.sum(num_cloudy)
+        num_clear = np.sum(num_clear)
 
-            patch_dir = split_dir / label / 'patch_{}'.format(patch_ids[split])
-            patch_dir.mkdir(exist_ok=True, parents=True)
-            tifffile.imsave(str(patch_dir / "image.tif"), patch_x)
-            tifffile.imsave(str(patch_dir / "mask.tif"), patch_mask)
-
-            patch_ids[split] += 1
-
-    num_cloudy = len(list((output_path / 'train').glob('cloudy/*')))
-    num_clear = len(list((output_path / 'train').glob('clear/*')))
     print('Done. Class balance in train: {} cloudy, {} clear'.format(num_cloudy, num_clear))
 
 
@@ -266,6 +364,7 @@ if __name__ == '__main__':
                                                                           'Dir should point to tifs produced by '
                                                                           'evaluate.py, for example '
                                                                           'outputs/FixedPointGAN_1/results/tifs')
+    parser.add_argument('--num_workers', type=int, default=-1, help='Number of workers')
     config = parser.parse_args()
     if config.generated_masks is not None:
         write_generated_masks(config)

@@ -91,6 +91,9 @@ class FCDSolver(pl.LightningModule):
         self.sample_step = config.sample_step
         self.model_save_step = config.model_save_step
         self.lr_update_step = config.lr_update_step
+        
+        self.act_G = config.act_G
+        self.act_D = config.act_D
 
         self.save_hyperparameters(config)
 
@@ -104,6 +107,9 @@ class FCDSolver(pl.LightningModule):
 
         self.x_fixed = None
         self.c_fixed_list = None
+        self.g_lr_cached = None
+        self.d_lr_cached = None
+        self.cm = np.zeros((2, 2))
 
         self.metrics_val = MetricCollection([Accuracy(num_classes=2, average='macro', compute_on_step=False),
                                              JaccardIndex(num_classes=2, compute_on_step=False),
@@ -115,35 +121,36 @@ class FCDSolver(pl.LightningModule):
         """Create a generator and a discriminator."""
         if self.dataset in ['L8Biome']:
             print('Building generator...')
-            self.G = Generator(self.g_conv_dim, self.c_dim, self.g_repeat_num, self.num_channels)
+            self.G = Generator(self.g_conv_dim, self.c_dim, 
+            self.g_repeat_num, self.num_channels, activation=self.act_G)
             print('Building discriminator...')
-            self.D = Discriminator(self.image_size, self.d_conv_dim, self.c_dim, self.d_repeat_num, self.num_channels)
+            self.D = Discriminator(self.image_size, self.d_conv_dim, 
+            self.c_dim, self.d_repeat_num, self.num_channels, 
+            activation=self.act_D)
 
         # if self.config.mode == 'train':
         #     self.print_network(self.G, 'G')
         #     self.print_network(self.D, 'D')
 
     def configure_optimizers(self):
-
-        def lr_func(step):
-            return 1 - max(0, (step + 1 - (self.num_iters - self.num_iters_decay))) // self.lr_update_step / float(self.num_iters_decay)
-
         # TODO: add self.num_iters_decay
         opt_D = torch.optim.Adam(self.D.parameters(), self.d_lr, (self.beta1, self.beta2))
-        sched_D = torch.optim.lr_scheduler.ReduceLROnPlateau(opt_D, mode='max')
+        #sched_D = torch.optim.lr_scheduler.ReduceLROnPlateau(opt_D, mode='max', patience=3)
 
         opt_G = torch.optim.Adam(self.G.parameters(), self.g_lr, (self.beta1, self.beta2))
-        sched_G = torch.optim.lr_scheduler.ReduceLROnPlateau(opt_G, mode='max')
+        #sched_G = torch.optim.lr_scheduler.ReduceLROnPlateau(opt_G, mode='max', patience=3)
 
         opt_D = {'optimizer': opt_D,
-                 'lr_scheduler': {'scheduler': sched_D,
-                                  'monitor': 'val/F1Score'
-                                  }}
+                # 'lr_scheduler': {'scheduler': sched_D,
+                #                  'monitor': 'val/F1Score'
+                #                  }
+                }
 
         opt_G = {'optimizer': opt_G,
-                 'lr_scheduler': {'scheduler': sched_G,
-                                  'monitor': 'val/F1Score'
-                                  }}
+                # 'lr_scheduler': {'scheduler': sched_G,
+                #                  'monitor': 'val/F1Score'
+                #                  }
+                }
 
         return opt_D, opt_G
 
@@ -152,36 +159,13 @@ class FCDSolver(pl.LightningModule):
         out_src, out_cls = self.D(x_fake)
 
         return out_src, out_cls
-    # def print_network(self, model, name):
-    #     """Print out the network information."""
-    #     num_params = 0
-    #     for p in model.parameters():
-    #         num_params += p.numel()
-    #     print(model)
-    #     print(f"Number of parameters for {name}: {num_params:,}")
-
-    # def restore_model(self, resume_iters, only_g=False):
-    #     """Restore the trained generator and discriminator."""
-    #     checkpoint_path = os.path.join(self.model_save_dir, '{}-model.ckpt'.format(resume_iters))
-    #     checkpoint = torch.load(checkpoint_path)
-    #     self.G.load_state_dict(checkpoint['G'])
-    #     if not only_g:
-    #         self.D.load_state_dict(checkpoint['D'])
-    #     self.best_val_f1 = checkpoint['best_val_f1'] if 'best_val_f1' in checkpoint.keys() else 0  # TODO
-    #     print('Loading the trained models from step {} with validation F1 {}'.format(resume_iters, self.best_val_f1))
-
-    # def build_tensorboard(self):
-    #     """Build a tensorboard logger."""
-    #     if self.config.experiment_name is not None:
-    #         self.tensorboard_writer = SummaryWriter(log_dir=os.path.join('runs', self.config.experiment_name))
-    #     else:
-    #         self.tensorboard_writer = SummaryWriter()
 
     def update_lr(self, g_lr, d_lr):
         """Decay learning rates of the generator and discriminator."""
-        for param_group in self.g_optimizer.param_groups:
+        d_opt, g_opt = self.optimizers()
+        for param_group in g_opt.param_groups:
             param_group['lr'] = g_lr
-        for param_group in self.d_optimizer.param_groups:
+        for param_group in d_opt.param_groups:
             param_group['lr'] = d_lr
 
     def reset_grad(self):
@@ -248,6 +232,10 @@ class FCDSolver(pl.LightningModule):
 
         self.x_fixed = x_fixed.to(self.device)
         self.c_fixed_list = self.create_labels(c_org, self.c_dim, self.dataset)
+        
+        # Learning rate cache for decaying.
+        self.g_lr_cached = self.g_lr
+        self.d_lr_cached = self.d_lr
 
 
     def training_step(self, batch, batch_idx, optimizer_idx):
@@ -292,71 +280,79 @@ class FCDSolver(pl.LightningModule):
             #                               3. Train the generator                                #
             # =================================================================================== #
             # Original-to-target domain.
-            x_fake = self.G(x_real, c_trg)
-            out_src, out_cls = self.D(x_fake)
-            g_loss_fake = - torch.mean(out_src)
-            g_loss_cls = self.classification_loss(out_cls, label_trg, self.dataset)
+            if (batch_idx + 1) % self.n_critic == 0:
+                x_fake = self.G(x_real, c_trg)
+                out_src, out_cls = self.D(x_fake)
+                g_loss_fake = - torch.mean(out_src)
+                g_loss_cls = self.classification_loss(out_cls, label_trg, self.dataset)
 
-            # Original-to-original domain.
-            x_fake_id = self.G(x_real, c_org)
-            out_src_id, out_cls_id = self.D(x_fake_id)
-            g_loss_fake_id = - torch.mean(out_src_id)
-            g_loss_cls_id = self.classification_loss(out_cls_id, label_org, self.dataset)
-            g_loss_id = torch.mean(torch.abs(x_real - x_fake_id))
+                # Original-to-original domain.
+                x_fake_id = self.G(x_real, c_org)
+                out_src_id, out_cls_id = self.D(x_fake_id)
+                g_loss_fake_id = - torch.mean(out_src_id)
+                g_loss_cls_id = self.classification_loss(out_cls_id, label_org, self.dataset)
+                g_loss_id = torch.mean(torch.abs(x_real - x_fake_id))
 
-            # Target-to-original domain.
-            x_reconst = self.G(x_fake, c_org)
-            g_loss_rec = torch.mean(torch.abs(x_real - x_reconst))
+                # Target-to-original domain.
+                x_reconst = self.G(x_fake, c_org)
+                g_loss_rec = torch.mean(torch.abs(x_real - x_reconst))
 
-            # Original-to-original domain.
-            x_reconst_id = self.G(x_fake_id, c_org)
-            g_loss_rec_id = torch.mean(torch.abs(x_real - x_reconst_id))
+                # Original-to-original domain.
+                x_reconst_id = self.G(x_fake_id, c_org)
+                g_loss_rec_id = torch.mean(torch.abs(x_real - x_reconst_id))
 
-            # Backward and optimize.
-            g_loss_same = g_loss_fake_id + self.lambda_rec * g_loss_rec_id + self.lambda_cls * g_loss_cls_id + self.lambda_id * g_loss_id
-            loss = g_loss_fake + self.lambda_rec * g_loss_rec + self.lambda_cls * g_loss_cls + g_loss_same
+                # Backward and optimize.
+                g_loss_same = g_loss_fake_id + self.lambda_rec * g_loss_rec_id + self.lambda_cls * g_loss_cls_id + self.lambda_id * g_loss_id
+                loss = g_loss_fake + self.lambda_rec * g_loss_rec + self.lambda_cls * g_loss_cls + g_loss_same
 
-            # Logging.
-            loss_dict['G/loss_fake'] = g_loss_fake.item()
-            loss_dict['G/loss_rec'] = g_loss_rec.item()
-            loss_dict['G/loss_cls'] = g_loss_cls.item()
-            loss_dict['G/loss_fake_id'] = g_loss_fake_id.item()
-            loss_dict['G/loss_rec_id'] = g_loss_rec_id.item()
-            loss_dict['G/loss_cls_id'] = g_loss_cls_id.item()
-            loss_dict['G/loss_id'] = g_loss_id.item()
+                # Logging.
+                loss_dict['G/loss_fake'] = g_loss_fake.item()
+                loss_dict['G/loss_rec'] = g_loss_rec.item()
+                loss_dict['G/loss_cls'] = g_loss_cls.item()
+                loss_dict['G/loss_fake_id'] = g_loss_fake_id.item()
+                loss_dict['G/loss_rec_id'] = g_loss_rec_id.item()
+                loss_dict['G/loss_cls_id'] = g_loss_cls_id.item()
+                loss_dict['G/loss_id'] = g_loss_id.item()
+            else:
+                loss = None
 
         # =================================================================================== #
         #                                 4. Miscellaneous                                    #
         # =================================================================================== #
         self.log_dict(loss_dict)
-
-        # Translate fixed images for debugging.
-        if (self.global_step + 1) % self.sample_step == 0:
-            self.visualize()
-
         return loss
+        
+        
+    def training_step_end(self, step_output):
+        # Translate fixed images for debugging.
+        if (self.global_step + 1) % self.sample_step == 0 and self.global_rank == 0:
+            self.visualize()
+        
+        if (self.global_step + 1) % self.lr_update_step == 0 and (self.global_step + 1) > (self.num_iters - self.num_iters_decay):
+            if optimizer_idx == 0:
+                self.d_lr_cached -= (self.d_lr / float(self.num_iters_decay))
+            else:
+                self.g_lr_cached -= (self.g_lr / float(self.num_iters_decay))
+                self.update_lr(self.g_lr_cached, self.d_lr_cached)
+                print('Decayed learning rates, g_lr: {}, d_lr: {}.'.format(self.g_lr_cached, self.d_lr_cached))
+
 
     @torch.no_grad()
     def visualize(self):
-        trans = Normalize(mean=[-1]*self.num_channels, std=[2]*self.num_channels, max_pixel_value=1/(2 ** 16 - 1))
-
-        x_fixed = torch.clamp(trans(self.x_fixed).to(torch.int32) >> 8, 0, 255).to(torch.uint8)
-        x_fake_list = [x_fixed]
+        x_fake_list = [self.x_fixed]
 
         for c_fixed in self.c_fixed_list:
             x_fake = self.G(self.x_fixed, c_fixed)
             difference = torch.abs(x_fake - self.x_fixed) - 1.0
             difference_grey = torch.cat(self.num_channels * [torch.mean(difference, dim=1, keepdim=True)],
                                         dim=1)
-            x_fake = torch.clamp(trans(x_fake).to(torch.int32) >> 8, 0, 255).to(torch.uint8)
             x_fake_list.append(x_fake)
-            difference_grey = torch.clamp(torch.round(difference_grey*255), 0, 255).to(torch.uint8)
             x_fake_list.append(difference_grey)
         x_concat = torch.cat(x_fake_list, dim=3)
         if self.num_channels > 3:
             x_concat = x_concat[:, [3, 2, 1]]  # Pick RGB bands
 
-        grid = make_grid(x_concat.data.cpu(), nrow=1, padding=0, normalize=True, value_range=(0, 255))
+        grid = make_grid(x_concat.data.cpu(), nrow=1, padding=0, normalize=True, value_range=(-1, 1))
         self.logger.experiment.add_image('images', grid, self.global_step)
 
     def validation_step(self, batch, batch_idx):
@@ -372,6 +368,9 @@ class FCDSolver(pl.LightningModule):
         self.conf_matrix(prediction, target)
 
         self.metrics_val(prediction, target)
+        self.cm += metrics.compute_confusion_matrix(prediction.numpy().flatten(), target.numpy().flatten(), num_classes=2)
+
+            
 
     def validation_epoch_end(self, val_step_outputs):
         metrics_dict = self.metrics_val.compute()
@@ -379,6 +378,9 @@ class FCDSolver(pl.LightningModule):
         self.metrics_val.reset()
 
         cm = self.conf_matrix.compute().cpu().numpy()
+        print(cm)
+        print(self.cm)
+        self.cm = np.zeros((2, 2))
 
         if self.global_rank == 0:
             acc, iou, f1 = metrics.accuracy(cm), metrics.iou_score(cm), metrics.f1_score(cm)
@@ -394,11 +396,12 @@ class FCDSolver(pl.LightningModule):
 
         # update generator opt every n_critic steps
         elif optimizer_idx == 1:
-            if (batch_idx + 1) % self.n_critic == 0:
+            if (self.global_step + 1) % self.n_critic == 0:
                 optimizer.step(closure=optimizer_closure)
             else:
                 # call the closure by itself to run `training_step` + `backward` without an optimizer step
                 optimizer_closure()
+                
 
     def binarize(self, difference, threshold=0.2):
         return (difference > threshold).astype(np.uint8)

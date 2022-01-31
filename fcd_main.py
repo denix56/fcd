@@ -19,14 +19,16 @@ def str2bool(v):
 
 def main(config):
     # For fast training.
+    
+    pl.seed_everything(42, workers=True)
 
     # Create directories if not exist.
     if not os.path.exists(config.model_save_dir):
-        os.makedirs(config.model_save_dir)
+        os.makedirs(config.model_save_dir, exist_ok=True)
     if not os.path.exists(config.sample_dir):
-        os.makedirs(config.sample_dir)
+        os.makedirs(config.sample_dir, exist_ok=True)
     if not os.path.exists(config.result_dir):
-        os.makedirs(config.result_dir)
+        os.makedirs(config.result_dir, exist_ok=True)
 
     if config.mode == 'eval_fmask':
         evaluate.test_landsat8_biome_fmask(config)
@@ -40,12 +42,12 @@ def main(config):
         lrm = pl.callbacks.LearningRateMonitor()
         ms = pl.callbacks.ModelSummary(max_depth=10)
         cpt = pl.callbacks.ModelCheckpoint(config.model_save_dir, monitor='val/F1Score', mode='max')
-        dsm = pl.callbacks.DeviceStatsMonitor()
+        #dsm = pl.callbacks.DeviceStatsMonitor()
 
         logger = TensorBoardLogger('runs', name=config.experiment_name, log_graph=True)
 
-        trainer = pl.Trainer(logger, accelerator="gpu", devices=config.n_gpus, callbacks=[lrm, ms, cpt, dsm],
-                             check_val_every_n_epoch=config.val_n_epoch, strategy="ddp" if config.n_gpus > 1 else None,
+        trainer = pl.Trainer(logger, accelerator="gpu", devices=config.n_gpus, callbacks=[lrm, ms, cpt],
+                             check_val_every_n_epoch=1, strategy="ddp" if config.n_gpus > 1 else None,
                              max_steps=config.num_iters, benchmark=True, fast_dev_run=False,
                              precision=16 if config.mixed else 32)
         trainer.fit(solver, datamodule=data)
@@ -112,6 +114,11 @@ if __name__ == '__main__':
     parser.add_argument('--lr_update_step', type=int, default=1000)
     parser.add_argument('--val_n_epoch', type=int, default=1)
     parser.add_argument('--mixed', action='store_true', help='Use mixed precision')
+    parser.add_argument('--act_D', type=str, default='lrelu', 
+    choices=['relu', 'lrelu', 'silu'], help='activation function to use in discriminator')
+    parser.add_argument('--act_G', type=str, default='relu', 
+    choices=['relu', 'lrelu', 'silu'], help='activation function to use in generator')
+    parser.add_argument('--use_h5', action='store_true', help='Use HDF5 dataset')
 
     config = parser.parse_args()
 

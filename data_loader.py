@@ -14,6 +14,10 @@ from pickle import dump, load
 import cv2
 
 import pytorch_lightning as pl
+import h5py
+
+from functools import partial
+from pytorch_lightning.utilities.seed import pl_worker_init_function
 
 
 class PLL8BiomeDataset(pl.LightningDataModule):
@@ -23,11 +27,14 @@ class PLL8BiomeDataset(pl.LightningDataModule):
 
     def train_dataloader(self):
         return get_loader(self.config.l8biome_image_dir, self.config.batch_size,
-                          'L8Biome', 'train', self.config.num_workers, self.config.num_channels)
+                          'L8Biome', 'train', self.config.num_workers, self.config.num_channels, 
+                          use_h5=self.config.use_h5, rank=self.trainer.global_rank)
 
     def val_dataloader(self):
         return get_loader(self.config.l8biome_image_dir, self.config.batch_size,
-                          'L8Biome', 'val', self.config.num_workers, self.config.num_channels, mask_file='mask.tif')
+                          'L8Biome', 'val', self.config.num_workers, 
+                          self.config.num_channels, mask_file='mask.tif', ret_mask=True,
+                          use_h5=self.config.use_h5, rank=self.trainer.global_rank)
 
     def on_before_batch_transfer(self, batch, dataloader_idx):
         x_real, label_org = batch['image'], batch['label']
@@ -97,7 +104,7 @@ class L8BiomeDataset(data.Dataset):
             random.shuffle(self.images)
             self.images = self.images[:int(keep_ratio * len(self.images))]
             print('Dataset size after keep_ratio', len(self.images))
-
+            
         self.transform = transform
         self.return_mask = mask_file is not None
         self.mask_file = mask_file
@@ -150,7 +157,74 @@ class L8BiomeDataset(data.Dataset):
         classes.sort()
         class_to_idx = {classes[i]: i for i in range(len(classes))}
         return classes, class_to_idx
+        
+        
+class L8BiomeHDFDataset(data.Dataset):
+    def __init__(self, root, transform, mode='train', ret_mask=True, keep_ratio=1.0, only_cloudy=False, init=False, seed=42):
+        self.root = root
+        self.mode = mode
+        self.only_cloudy = only_cloudy
+        self.keep_ratio = keep_ratio
+        self.transform = transform
+        self.return_mask = ret_mask        
+        self.seed = seed
+        
+        self.image_ds = '{}/{}'.format(self.mode, 'images')
+        self.mask_ds = '{}/{}'.format(self.mode, 'masks')
+        self.label_ds = '{}/{}'.format(self.mode, 'labels')
+        
+        self.h5f = None
+        self.indices = None
+        self.classes = None
+        self.class_to_idx = None
+        self.init_hdf()        
+        
+    def init_hdf(self):
+        self.h5f = h5py.File(os.path.join(self.root, 'l8biome.h5'), 'r')
+        self.classes = self.h5f.attrs['classes']
+        self.class_to_idx = {self.classes[i]: i for i in range(len(self.classes))}
+        
+        if self.only_cloudy:
+            self.indices = np.where(self.h5f[self.label_ds][:] == 1)
+        else:
+            self.indices = np.arange(self.h5f[self.label_ds].shape[0])
+            
+        if self.keep_ratio < 1.0:
+            # Subsample images for supervised training on fake images, and fine-tuning on keep_ratio% real images
+            print('Dataset size before keep_ratio', self.indices.shape[0])
+            np.random.default_rng(self.seed).shuffle(self.indices)  # Ensure we pick the same 1% across experiments
+            self.indices = self.indices[:int(keep_ratio * len(self.images))]
+            print('Dataset size after keep_ratio', self.indices.shape[0])
 
+    def __getitem__(self, index):
+        idx = self.indices[index]
+        image = self.h5f[self.image_ds][idx]
+        label = self.h5f[self.label_ds][idx]
+
+        out = {
+            'patch_name': 'patch_{}'.format(idx),
+            'label': torch.tensor(label).float(),
+        }
+        if self.return_mask:
+            # 0 = invalid, 1 = clear, 2 = clouds
+            mask = self.h5f[self.mask_ds][idx]
+            sample = self.transform(image=image, mask=mask)
+            out['image'] = sample['image']
+            out['mask'] = sample['mask']
+        else:
+            out['image'] = self.transform(image=image)['image']
+        return out
+
+    def __len__(self):
+        return self.indices.shape[0]
+        
+    @staticmethod
+    def worker_init_fn(worker_id, rank=None):
+        info = torch.utils.data.get_worker_info()
+        info.dataset.init_hdf()
+        
+        pl_worker_init_function(worker_id, rank)
+    
 
 class L8SparcsDataset(data.Dataset):
     def __init__(self, root, transform, mode):
@@ -190,26 +264,43 @@ class L8SparcsDataset(data.Dataset):
         return classes, class_to_idx
 
 
+
 def get_loader(image_dir, batch_size=16, dataset='L8Biome', mode='train',
-               num_workers=4, num_channels=3, mask_file=None, keep_ratio=1.0, shuffle=None, force_no_aug=False, only_cloudy=False, pin_memory=True):
+               num_workers=4, num_channels=3, mask_file=None, ret_mask=False, keep_ratio=1.0, 
+               shuffle=None, force_no_aug=False, only_cloudy=False, pin_memory=True,
+               use_h5=False, rank=None):
     """Build and return a data loader."""
     transform = []
     if mode == 'train' and not force_no_aug:
         transform.append(HorizontalFlip())
-        transform.append(VerticalFlip())
-        transform.append(ShiftScaleRotate(border_mode=cv2.BORDER_CONSTANT, value=0, mask_value=0, p=0.2))
+        #transform.append(VerticalFlip())
+        #transform.append(ShiftScaleRotate(border_mode=cv2.BORDER_CONSTANT, value=0, mask_value=0, p=0.2))
     transform.append(Normalize(mean=(0.5,) * num_channels, std=(0.5,) * num_channels, max_pixel_value=2 ** 16 - 1))
     transform.append(ToTensorV2())
     transform = Compose(transform)
-
-    if dataset == 'L8Biome':
-        dataset = L8BiomeDataset(image_dir, transform, mode, mask_file, keep_ratio, only_cloudy=only_cloudy)
-    elif dataset == 'L8Sparcs':
-        dataset = L8SparcsDataset(image_dir, transform, mode)
+    
+    if mode != 'train':
+        batch_size *= 2
+        
+    if use_h5:
+        if dataset == 'L8Biome':
+            dataset = L8BiomeHDFDataset(image_dir, transform, mode, 
+                  ret_mask=ret_mask, keep_ratio=keep_ratio, only_cloudy=only_cloudy)
+            worker_init_fn = partial(L8BiomeHDFDataset.worker_init_fn, rank=rank)
+        else:
+            raise NotImplementedError()
+        
+    else:
+        if dataset == 'L8Biome':
+            dataset = L8BiomeDataset(image_dir, transform, mode, mask_file, keep_ratio, only_cloudy=only_cloudy)
+        elif dataset == 'L8Sparcs':
+            dataset = L8SparcsDataset(image_dir, transform, mode)
+        worker_init_fn = None
 
     data_loader = data.DataLoader(dataset=dataset,
                                   batch_size=batch_size,
                                   shuffle=(mode == 'train') if shuffle is None else shuffle,
                                   num_workers=num_workers,
+                                  worker_init_fn=worker_init_fn,
                                   pin_memory=pin_memory)
     return data_loader
