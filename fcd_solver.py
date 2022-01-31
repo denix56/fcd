@@ -35,16 +35,6 @@ class FCDSolver(pl.LightningModule):
     def __init__(self, config):
         """Initialize configurations."""
         super().__init__()
-        # Data loader.
-        self.train_loader = None
-        self.val_loader = None
-        self.test_loader = None
-
-        self.train_loader = get_loader(config.l8biome_image_dir, config.batch_size,
-                                       'L8Biome', 'train', config.num_workers, config.num_channels)
-        self.val_loader = get_loader(config.l8biome_image_dir, config.batch_size,
-                                     'L8Biome', 'val', config.num_workers, config.num_channels, mask_file='mask.tif')
-
         # Model configurations.
         self.c_dim = config.c_dim
         self.image_size = config.image_size
