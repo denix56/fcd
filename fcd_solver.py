@@ -24,6 +24,7 @@ from models.fixed_point_gan import Discriminator
 from models.fixed_point_gan import Generator
 
 import pytorch_lightning as pl
+from pytorch_lightning.utilities.distributed import rank_zero_only
 
 from torchmetrics import MetricCollection
 from torchmetrics import JaccardIndex, Accuracy, F1Score, ConfusionMatrix
@@ -208,21 +209,6 @@ class FCDSolver(pl.LightningModule):
 
 
     def on_train_start(self):
-        data_loader = self.trainer.datamodule.train_dataloader()
-
-        # Fetch fixed inputs for debugging.
-        data_iter = iter(data_loader)
-        sample_fixed = next(data_iter)
-        x_fixed, c_org, _, _, _ = self.trainer.datamodule.on_before_batch_transfer(sample_fixed, 0)
-        print('Number batches in training dataset', len(data_loader))
-
-        # Uncomment to visualize input data
-        # self.visualize_input_data()
-        # exit()
-
-        self.x_fixed = x_fixed.to(self.device)
-        self.c_fixed_list = self.create_labels(c_org, self.c_dim, self.dataset)
-        
         # Learning rate cache for decaying.
         self.g_lr_cached = self.g_lr
         self.d_lr_cached = self.d_lr
@@ -232,7 +218,7 @@ class FCDSolver(pl.LightningModule):
         # =================================================================================== #
         #                             1. Preprocess input data                                #
         # =================================================================================== #
-        x_real, c_org, c_trg, label_org, label_trg = batch
+        x_real, c_org, c_trg, label_org, label_trg = batch        
         loss_dict = {}
 
         if optimizer_idx == 0:
@@ -311,7 +297,7 @@ class FCDSolver(pl.LightningModule):
         # =================================================================================== #
         self.log_dict(loss_dict)
 
-        if (self.global_step + 1) % self.sample_step == 0 and self.global_rank == 0:
+        if (self.global_step + 1) % self.sample_step == 0 and self.x_fixed is not None:
             self.visualize()
 
         if (self.global_step + 1) % self.lr_update_step == 0 and (self.global_step + 1) > (
@@ -327,6 +313,7 @@ class FCDSolver(pl.LightningModule):
 
 
     @torch.no_grad()
+    @rank_zero_only
     def visualize(self):
         x_fake_list = [self.x_fixed]
 
@@ -346,6 +333,16 @@ class FCDSolver(pl.LightningModule):
 
     def validation_step(self, batch, batch_idx):
         x_real, c_org, _, _, _, target = batch
+        
+        if self.global_step == 0 and self.global_rank == 0:
+            # Fetch fixed inputs for debugging.
+
+            # Uncomment to visualize input data
+            # self.visualize_input_data()
+            # exit()
+
+            self.x_fixed = x_real.to(self.device)
+            self.c_fixed_list = self.create_labels(c_org, self.c_dim, self.dataset)
 
         difference = self.compute_difference_map(x_real)
         prediction = (difference > self.threshold).to(torch.uint8)
@@ -357,20 +354,20 @@ class FCDSolver(pl.LightningModule):
         self.conf_matrix(prediction, target)
 
         self.metrics_val(prediction, target)
-        self.cm += metrics.compute_confusion_matrix(prediction.cpu().numpy().flatten(), target.cpu().numpy().flatten(), num_classes=2)
+        #self.cm += metrics.compute_confusion_matrix(prediction.cpu().numpy().flatten(), target.cpu().numpy().flatten(), num_classes=2)
 
 
     def validation_epoch_end(self, val_step_outputs):
         metrics_dict = self.metrics_val.compute()
         self.log_dict(metrics_dict)
         self.metrics_val.reset()
-
-        cm = self.conf_matrix.compute().cpu().numpy()
-        print(cm)
-        print(self.cm)
-        self.cm = np.zeros((2, 2))
+        
+        #print(self.cm)
+        #self.cm = np.zeros((2, 2))
 
         if self.global_rank == 0:
+            cm = self.conf_matrix.compute().cpu().numpy()
+            print(cm)
             acc, iou, f1 = metrics.accuracy(cm), metrics.iou_score(cm), metrics.f1_score(cm)
             print('Validation Result: Accuracy={:.2%}, IoU={:.4}, F1={:.4}'.format(acc, iou, f1))
         self.conf_matrix.reset()

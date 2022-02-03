@@ -125,11 +125,9 @@ def prepare_patches(config):
     print('Train patches: {}, validation patches: {}'.format(train_size, val_size))
     
     # in train part
-    num_cloudy = Value('i', 0)
-    num_clear = Value('i', 0)   
     
     with h5py.File(h5file, 'w') as h5f:
-        h5py.attrs.create('classes', ['clear', 'cloudy'])
+        h5f.attrs.create('classes', ['clear', 'cloudy'])
         
         ds = {}
         for split, size in zip(['train', 'val'], [train_size, val_size]):
@@ -138,55 +136,55 @@ def prepare_patches(config):
                 'images': grp.create_dataset('images', shape=(size, patch_size, patch_size, 10), dtype=np.uint16),
                 'masks': grp.create_dataset('masks', shape=(size, patch_size, patch_size), dtype=np.uint8),
                 'labels': grp.create_dataset('labels', shape=(size,), dtype=np.uint8),
-                'counter_processed': Value('i', 0)
+                'counter_processed': 0
             }
         
-        with tqdm_joblib(tqdm(desc='Reading L8 tile (2nd run)', total=len(images))) as progress_bar:
-            def work_func(img_idx, image):
-                split = train_val_test[img_idx]
-                x, mask = read_image(image)
-                assert x.dtype == np.uint16
+        #with tqdm_joblib(tqdm(desc='Reading L8 tile (2nd run)', total=len(images))) as progress_bar:
+        def work_func(img_idx, image):
+            split = train_val_test[img_idx]
+            x, mask = read_image(image)
+            assert x.dtype == np.uint16
 
-                height, width, _ = x.shape
-                patches = list(product(range(0, patch_size * (height // patch_size), patch_size),
-                                       range(0, patch_size * (width // patch_size), patch_size)))
+            height, width, _ = x.shape
+            patches = list(product(range(0, patch_size * (height // patch_size), patch_size),
+                                   range(0, patch_size * (width // patch_size), patch_size)))
 
-                # Create thumbnail of full image for debugging
-                thumbnail = np.clip(1.5 * (x[..., [3, 2, 1]].copy() >> 8), 0, 255).astype(np.uint8)
-                thumbnail = cv2.resize(thumbnail, (1000, 1000))
-                Image.fromarray(thumbnail).save(
-                    str(thumbnail_dir / '{}_thumbnail_{}_{}.jpg'.format(split, image.biome, image.name)))
+            # Create thumbnail of full image for debugging
+            thumbnail = np.clip(1.5 * (x[..., [3, 2, 1]].copy() >> 8), 0, 255).astype(np.uint8)
+            thumbnail = cv2.resize(thumbnail, (1000, 1000))
+            Image.fromarray(thumbnail).save(
+                str(thumbnail_dir / '{}_thumbnail_{}_{}.jpg'.format(split, image.biome, image.name)))
 
-                if split == 'test':
-                    return 0, 0  # use raw images for testing instead of patches
-                    
-                num_cloudy = 0
-                num_clear = 0
-
-                for row, col in patches:
-                    patch_x = x[row:row + patch_size, col:col + patch_size]
-                    patch_mask = mask[row:row + patch_size, col:col + patch_size]
-                    if (patch_mask == 0).all():  # ignore completely invalid patches
-                        continue
-
-                    label = 1 if (patch_mask == 2).any() else 0
-                    
-                    if split == 'train':
-                        if label == 1:
-                            num_cloudy += 1
-                        else:
-                            num_clear += 1
-                    
-                    with ds[split]['counter_processed'].get_lock():
-                        ds_idx = ds[split]['counter_processed'].value
-                        ds[split]['counter_processed'].value += 1
-                    ds[split]['images'][ds_idx] = patch_x
-                    ds[split]['masks'][ds_idx] = patch_mask
-                    ds[split]['labels'][ds_idx] = label
-                    
-                return num_cloudy, num_clear
+            if split == 'test':
+                return 0, 0  # use raw images for testing instead of patches
                 
-            result = Parallel(n_jobs=config.num_workers, backend='threading')(delayed(work_func)(img_idx, image) for img_idx, image in enumerate(images))
+            num_cloudy = 0
+            num_clear = 0
+
+            for row, col in patches:
+                patch_x = x[row:row + patch_size, col:col + patch_size]
+                patch_mask = mask[row:row + patch_size, col:col + patch_size]
+                if (patch_mask == 0).all():  # ignore completely invalid patches
+                    continue
+
+                label = 1 if (patch_mask == 2).any() else 0
+                
+                if split == 'train':
+                    if label == 1:
+                        num_cloudy += 1
+                    else:
+                        num_clear += 1
+                
+                ds_idx = ds[split]['counter_processed']
+                ds[split]['images'][ds_idx] = patch_x
+                ds[split]['masks'][ds_idx] = patch_mask
+                ds[split]['labels'][ds_idx] = label
+                
+                ds[split]['counter_processed'] += 1
+                
+            return num_cloudy, num_clear
+                
+        result = [work_func(img_idx, image) for img_idx, image in tqdm(enumerate(images), total=len(images))]
 
         num_cloudy, num_clear = zip(*result)
         num_cloudy = np.sum(num_cloudy)

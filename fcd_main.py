@@ -20,7 +20,7 @@ def str2bool(v):
 def main(config):
     # For fast training.
     
-    pl.seed_everything(42, workers=True)
+    #pl.seed_everything(8888, workers=True)
 
     # Create directories if not exist.
     if not os.path.exists(config.model_save_dir):
@@ -45,9 +45,16 @@ def main(config):
         #dsm = pl.callbacks.DeviceStatsMonitor()
 
         logger = TensorBoardLogger('runs', name=config.experiment_name, log_graph=True)
-
+        
+        strategy = None
+        if config.n_gpus > 1:
+            if config.h5_mem:
+                strategy = 'ddp_spawn'
+            else:
+                strategy = 'ddp'
+        
         trainer = pl.Trainer(logger, accelerator="gpu", devices=config.n_gpus, callbacks=[lrm, ms, cpt],
-                             check_val_every_n_epoch=1, strategy="ddp" if config.n_gpus > 1 else None,
+                             check_val_every_n_epoch=1, strategy=strategy,
                              max_steps=config.num_iters, benchmark=True, fast_dev_run=False,
                              precision=16 if config.mixed else 32)
         trainer.fit(solver, datamodule=data)
