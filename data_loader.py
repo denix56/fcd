@@ -287,8 +287,9 @@ class L8BiomeHDFDataset(data.Dataset):
     def worker_init_fn(worker_id, rank=None):
         info = torch.utils.data.get_worker_info()
         info.dataset.__init_hdf()
-        
-        pl_worker_init_function(worker_id, rank)
+
+        if int(os.environ.get("PL_SEED_WORKERS", 0)):
+            pl_worker_init_function(worker_id, rank)
     
 
 class L8SparcsDataset(data.Dataset):
