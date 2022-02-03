@@ -197,6 +197,11 @@ class L8BiomeHDFDataset(data.Dataset):
         # Cannot pickle when creating workers
         self.h5f.close()
         self.h5f = None
+
+        if not self.shared_mem:
+            self.images = None
+            self.masks = None
+            self.labels = None
         
         self.n_elements = self.indices.shape[0]
         
@@ -248,13 +253,6 @@ class L8BiomeHDFDataset(data.Dataset):
             self.labels = torch.from_numpy(tmp_arr)
             end = time.time()
             print('{} labels loaded in {} ms'.format(self.mode, end - start))
-                        
-            # PL shares automatically when ddp_spawn is used
-            #print('Moving to shared memory...')
-            #self.indices.share_memory_()
-            #self.images.share_memory_()
-            #self.masks.share_memory_()
-            #self.labels.share_memory_()
 
 
     def __getitem__(self, index):
@@ -376,11 +374,16 @@ def get_loader(image_dir='', batch_size=16, dataset='L8Biome', mode='train',
     worker_init_fn = None
     
     if isinstance(dataset, str):
+        if use_h5 and not shared_mem:
+            if dataset == 'L8Biome':
+                worker_init_fn = partial(L8BiomeHDFDataset.worker_init_fn, rank=rank)
+            else:
+                raise NotImplementedError()
+
         dataset = get_dataset(image_dir=image_dir, dataset=dataset, mode=mode,
                 num_channels=num_channels, mask_file=mask_file, ret_mask=ret_mask, keep_ratio=keep_ratio,
                 force_no_aug=force_no_aug, only_cloudy=only_cloudy,
-                use_h5=use_h5, shared_mem=shared_mem, init_shuffle=init_shuffle, seed=seed)   
-    
+                use_h5=use_h5, shared_mem=shared_mem, init_shuffle=init_shuffle, seed=seed)
 
     data_loader = data.DataLoader(dataset=dataset,
                                   batch_size=batch_size,

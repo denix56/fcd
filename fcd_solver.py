@@ -29,6 +29,9 @@ from pytorch_lightning.utilities.distributed import rank_zero_only
 from torchmetrics import MetricCollection
 from torchmetrics import JaccardIndex, Accuracy, F1Score, ConfusionMatrix
 
+from torchvision.models import vgg19
+import torchvision.transforms.functional as TF
+
 
 class FCDSolver(pl.LightningModule):
     """Solver for training and testing Fixed-Point GAN for Cloud Detection."""
@@ -47,6 +50,7 @@ class FCDSolver(pl.LightningModule):
         self.lambda_rec = config.lambda_rec
         self.lambda_gp = config.lambda_gp
         self.lambda_id = config.lambda_id
+        self.lambda_vgg = config.lambda_vgg
         self.num_channels = config.num_channels
 
         # Training configurations.
@@ -86,6 +90,8 @@ class FCDSolver(pl.LightningModule):
         self.act_G = config.act_G
         self.act_D = config.act_D
 
+        self.use_feats = config.use_feats
+
         self.save_hyperparameters(config)
 
         self.example_input_array = {'image': torch.zeros(1, self.num_channels, self.image_size, self.image_size),
@@ -119,9 +125,9 @@ class FCDSolver(pl.LightningModule):
             self.c_dim, self.d_repeat_num, self.num_channels, 
             activation=self.act_D)
 
-        # if self.config.mode == 'train':
-        #     self.print_network(self.G, 'G')
-        #     self.print_network(self.D, 'D')
+            # self.vgg = vgg19(pretrained=True).features[:8]
+            # self.vgg.eval()
+            # self.vgg.requires_grad_(False)
 
     def configure_optimizers(self):
         # TODO: add self.num_iters_decay
@@ -147,7 +153,7 @@ class FCDSolver(pl.LightningModule):
 
     def forward(self, x_real, c_org, c_trg, label_org, label_trg):
         x_fake = self.G(x_real, c_trg)
-        out_src, out_cls = self.D(x_fake)
+        out_src, out_cls, _ = self.D(x_fake)
 
         return out_src, out_cls
 
@@ -227,19 +233,19 @@ class FCDSolver(pl.LightningModule):
             # =================================================================================== #
 
             # Compute loss with real images.
-            out_src, out_cls = self.D(x_real)
+            out_src, out_cls, _ = self.D(x_real)
             d_loss_real = - torch.mean(out_src)
             d_loss_cls = self.classification_loss(out_cls, label_org, self.dataset)
 
             # Compute loss with fake images.
             x_fake = self.G(x_real, c_trg)
-            out_src, out_cls = self.D(x_fake.detach())
+            out_src, out_cls, _ = self.D(x_fake.detach())
             d_loss_fake = torch.mean(out_src)
 
             # Compute loss for gradient penalty.
             alpha = torch.rand(x_real.size(0), 1, 1, 1).to(self.device)
             x_hat = (alpha * x_real.data + (1 - alpha) * x_fake.data).requires_grad_(True)
-            out_src, _ = self.D(x_hat)
+            out_src, _, _ = self.D(x_hat)
             d_loss_gp = self.gradient_penalty(out_src, x_hat)
 
             # Backward and optimize.
@@ -258,28 +264,42 @@ class FCDSolver(pl.LightningModule):
             # Original-to-target domain.
             if (self.global_step + 1) % self.n_critic == 0:
                 x_fake = self.G(x_real, c_trg)
-                out_src, out_cls = self.D(x_fake)
+                out_src, out_cls, x_fake_feats = self.D(x_fake)
                 g_loss_fake = - torch.mean(out_src)
                 g_loss_cls = self.classification_loss(out_cls, label_trg, self.dataset)
 
                 # Original-to-original domain.
                 x_fake_id = self.G(x_real, c_org)
-                out_src_id, out_cls_id = self.D(x_fake_id)
+                out_src_id, out_cls_id, x_fake_id_feats = self.D(x_fake_id)
                 g_loss_fake_id = - torch.mean(out_src_id)
                 g_loss_cls_id = self.classification_loss(out_cls_id, label_org, self.dataset)
                 g_loss_id = torch.mean(torch.abs(x_real - x_fake_id))
 
                 # Target-to-original domain.
                 x_reconst = self.G(x_fake, c_org)
+                if self.use_feats:
+                    _, _, x_reconst_feats = self.D(x_reconst)
                 g_loss_rec = torch.mean(torch.abs(x_real - x_reconst))
 
                 # Original-to-original domain.
                 x_reconst_id = self.G(x_fake_id, c_org)
+                _, _, x_reconst_id_feats = self.D(x_reconst_id)
                 g_loss_rec_id = torch.mean(torch.abs(x_real - x_reconst_id))
+
+                if self.use_feats:
+                    _, _, x_real_feats = self.D(x_real)
+                    g_loss_id_vgg = torch.mean(torch.abs(x_real_feats - x_fake_id_feats))
+                    g_loss_rec_vgg = torch.mean(torch.abs(x_real_feats - x_reconst_feats))
+                    g_loss_rec_id_vgg = torch.mean(torch.abs(x_real_feats - x_reconst_id_feats))
+                    g_loss_vgg = self.lambda_vgg * self.lambda_rec * g_loss_rec_vgg + self.lambda_vgg * self.lambda_rec * g_loss_rec_id_vgg \
+                                 + self.lambda_vgg * self.lambda_id * g_loss_id_vgg
+                else:
+                    g_loss_vgg = 0
 
                 # Backward and optimize.
                 g_loss_same = g_loss_fake_id + self.lambda_rec * g_loss_rec_id + self.lambda_cls * g_loss_cls_id + self.lambda_id * g_loss_id
-                loss = g_loss_fake + self.lambda_rec * g_loss_rec + self.lambda_cls * g_loss_cls + g_loss_same
+
+                loss = g_loss_fake + self.lambda_rec * g_loss_rec + self.lambda_cls * g_loss_cls + g_loss_same + g_loss_vgg
 
                 # Logging.
                 loss_dict['G/loss_fake'] = g_loss_fake
@@ -289,6 +309,9 @@ class FCDSolver(pl.LightningModule):
                 loss_dict['G/loss_rec_id'] = g_loss_rec_id
                 loss_dict['G/loss_cls_id'] = g_loss_cls_id
                 loss_dict['G/loss_id'] = g_loss_id
+                loss_dict['G/loss_id_vgg'] = g_loss_id_vgg
+                loss_dict['G/loss_rec_vgg'] = g_loss_rec_vgg
+                loss_dict['G/loss_rec_id_vgg'] = g_loss_rec_id_vgg
             else:
                 loss = None
 
@@ -596,3 +619,10 @@ class FCDSolver(pl.LightningModule):
         difference_map = torch.abs(x_fake - inputs) / 2  # compute difference, move to [0, 1]
         difference_map = torch.mean(difference_map, dim=1)
         return difference_map
+
+    @staticmethod
+    def to_imagenet_space(img):
+        return TF.normalize(img, -1 + 2*np.array([0.485, 0.456, 0.406]), 2*np.array([0.229, 0.224, 0.225]))
+
+    def vgg_feats(self, img):
+        return 0#self.vgg(FCDSolver.to_imagenet_space(img))
