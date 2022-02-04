@@ -117,6 +117,13 @@ class FCDSolver(pl.LightningModule):
 
         self.conf_matrix = ConfusionMatrix(num_classes=2, compute_on_step=False)
 
+    @staticmethod
+    def initialize_weights(m):
+        if isinstance(m, torch.nn.Conv2d):
+            torch.nn.init.xavier_normal_(m.weight.data)
+            if m.bias is not None:
+                m.bias.data.zero_()
+
     def build_model(self):
         """Create a generator and a discriminator."""
         if self.dataset in ['L8Biome']:
@@ -127,7 +134,10 @@ class FCDSolver(pl.LightningModule):
             self.D = Discriminator(self.image_size, self.d_conv_dim, 
             self.c_dim, self.d_repeat_num, self.num_channels, 
             activation=self.act_D)
-            
+
+            self.G.apply(FCDSolver.initialize_weights)
+            self.D.apply(FCDSolver.initialize_weights)
+
             if self.use_vgg:
                 bn = True
                 if bn:
@@ -291,8 +301,12 @@ class FCDSolver(pl.LightningModule):
 
                 # Target-to-original domain.
                 mask = (c_org == 0).squeeze(1)
-                x_reconst = self.G(x_fake[mask], c_org[mask])
-                g_loss_rec = torch.mean(torch.abs(x_real[mask] - x_reconst))
+                mask_ne = mask.any()
+                if mask_ne:
+                    x_reconst = self.G(x_fake[mask], c_org[mask])
+                    g_loss_rec = torch.mean(torch.abs(x_real[mask] - x_reconst))
+                else:
+                    g_loss_rec = 0
 
                 # Original-to-original domain.
                 x_reconst_id = self.G(x_fake_id, c_org)
@@ -303,7 +317,10 @@ class FCDSolver(pl.LightningModule):
                     _, _, x_real_feats = self.D(x_real)
                     _, _, x_reconst_feats = self.D(x_reconst)
                     g_loss_id_feat = torch.mean(torch.abs(x_real_feats - x_fake_id_feats))
-                    g_loss_rec_feat = torch.mean(torch.abs(x_real_feats[mask] - x_reconst_feats))
+                    if mask_ne:
+                        g_loss_rec_feat = torch.mean(torch.abs(x_real_feats[mask] - x_reconst_feats))
+                    else:
+                        g_loss_rec_feat = 0
                     g_loss_rec_id_feat = torch.mean(torch.abs(x_real_feats - x_reconst_id_feats))
                     g_loss_feat = self.lambda_feat * self.lambda_rec * g_loss_rec_feat + self.lambda_feat * self.lambda_rec * g_loss_rec_id_feat \
                                  + self.lambda_feat * self.lambda_id * g_loss_id_feat
