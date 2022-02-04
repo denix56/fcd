@@ -18,7 +18,7 @@ from torchvision.utils import save_image, make_grid
 from tqdm import tqdm
 
 import metrics
-from data_loader import get_loader, L8BiomeDataset
+from data_loader import get_loader, L8BiomeDataset, get_dataset
 from evaluate import get_metrics_dict
 from models.fixed_point_gan import Discriminator
 from models.fixed_point_gan import Generator
@@ -29,8 +29,7 @@ from pytorch_lightning.utilities.distributed import rank_zero_only
 from torchmetrics import MetricCollection
 from torchmetrics import JaccardIndex, Accuracy, F1Score, ConfusionMatrix
 
-from torchvision.models import vgg19
-import torchvision.transforms.functional as TF
+from argparse import Namespace
 
 
 class FCDSolver(pl.LightningModule):
@@ -39,6 +38,9 @@ class FCDSolver(pl.LightningModule):
     def __init__(self, config):
         """Initialize configurations."""
         super().__init__()
+
+        if isinstance(config, dict):
+            config = Namespace(**config)
         # Model configurations.
         self.c_dim = config.c_dim
         self.image_size = config.image_size
@@ -50,7 +52,6 @@ class FCDSolver(pl.LightningModule):
         self.lambda_rec = config.lambda_rec
         self.lambda_gp = config.lambda_gp
         self.lambda_id = config.lambda_id
-        self.lambda_vgg = config.lambda_vgg
         self.num_channels = config.num_channels
 
         # Training configurations.
@@ -90,8 +91,6 @@ class FCDSolver(pl.LightningModule):
         self.act_G = config.act_G
         self.act_D = config.act_D
 
-        self.use_feats = config.use_feats
-
         self.save_hyperparameters(config)
 
         self.example_input_array = {'image': torch.zeros(1, self.num_channels, self.image_size, self.image_size),
@@ -125,9 +124,9 @@ class FCDSolver(pl.LightningModule):
             self.c_dim, self.d_repeat_num, self.num_channels, 
             activation=self.act_D)
 
-            # self.vgg = vgg19(pretrained=True).features[:8]
-            # self.vgg.eval()
-            # self.vgg.requires_grad_(False)
+        # if self.config.mode == 'train':
+        #     self.print_network(self.G, 'G')
+        #     self.print_network(self.D, 'D')
 
     def configure_optimizers(self):
         # TODO: add self.num_iters_decay
@@ -153,7 +152,7 @@ class FCDSolver(pl.LightningModule):
 
     def forward(self, x_real, c_org, c_trg, label_org, label_trg):
         x_fake = self.G(x_real, c_trg)
-        out_src, out_cls, _ = self.D(x_fake)
+        out_src, out_cls = self.D(x_fake)
 
         return out_src, out_cls
 
@@ -233,19 +232,19 @@ class FCDSolver(pl.LightningModule):
             # =================================================================================== #
 
             # Compute loss with real images.
-            out_src, out_cls, _ = self.D(x_real)
+            out_src, out_cls = self.D(x_real)
             d_loss_real = - torch.mean(out_src)
             d_loss_cls = self.classification_loss(out_cls, label_org, self.dataset)
 
             # Compute loss with fake images.
             x_fake = self.G(x_real, c_trg)
-            out_src, out_cls, _ = self.D(x_fake.detach())
+            out_src, out_cls = self.D(x_fake.detach())
             d_loss_fake = torch.mean(out_src)
 
             # Compute loss for gradient penalty.
             alpha = torch.rand(x_real.size(0), 1, 1, 1).to(self.device)
             x_hat = (alpha * x_real.data + (1 - alpha) * x_fake.data).requires_grad_(True)
-            out_src, _, _ = self.D(x_hat)
+            out_src, _ = self.D(x_hat)
             d_loss_gp = self.gradient_penalty(out_src, x_hat)
 
             # Backward and optimize.
@@ -264,42 +263,28 @@ class FCDSolver(pl.LightningModule):
             # Original-to-target domain.
             if (self.global_step + 1) % self.n_critic == 0:
                 x_fake = self.G(x_real, c_trg)
-                out_src, out_cls, x_fake_feats = self.D(x_fake)
+                out_src, out_cls = self.D(x_fake)
                 g_loss_fake = - torch.mean(out_src)
                 g_loss_cls = self.classification_loss(out_cls, label_trg, self.dataset)
 
                 # Original-to-original domain.
                 x_fake_id = self.G(x_real, c_org)
-                out_src_id, out_cls_id, x_fake_id_feats = self.D(x_fake_id)
+                out_src_id, out_cls_id = self.D(x_fake_id)
                 g_loss_fake_id = - torch.mean(out_src_id)
                 g_loss_cls_id = self.classification_loss(out_cls_id, label_org, self.dataset)
                 g_loss_id = torch.mean(torch.abs(x_real - x_fake_id))
 
                 # Target-to-original domain.
                 x_reconst = self.G(x_fake, c_org)
-                if self.use_feats:
-                    _, _, x_reconst_feats = self.D(x_reconst)
                 g_loss_rec = torch.mean(torch.abs(x_real - x_reconst))
 
                 # Original-to-original domain.
                 x_reconst_id = self.G(x_fake_id, c_org)
-                _, _, x_reconst_id_feats = self.D(x_reconst_id)
                 g_loss_rec_id = torch.mean(torch.abs(x_real - x_reconst_id))
-
-                if self.use_feats:
-                    _, _, x_real_feats = self.D(x_real)
-                    g_loss_id_vgg = torch.mean(torch.abs(x_real_feats - x_fake_id_feats))
-                    g_loss_rec_vgg = torch.mean(torch.abs(x_real_feats - x_reconst_feats))
-                    g_loss_rec_id_vgg = torch.mean(torch.abs(x_real_feats - x_reconst_id_feats))
-                    g_loss_vgg = self.lambda_vgg * self.lambda_rec * g_loss_rec_vgg + self.lambda_vgg * self.lambda_rec * g_loss_rec_id_vgg \
-                                 + self.lambda_vgg * self.lambda_id * g_loss_id_vgg
-                else:
-                    g_loss_vgg = 0
 
                 # Backward and optimize.
                 g_loss_same = g_loss_fake_id + self.lambda_rec * g_loss_rec_id + self.lambda_cls * g_loss_cls_id + self.lambda_id * g_loss_id
-
-                loss = g_loss_fake + self.lambda_rec * g_loss_rec + self.lambda_cls * g_loss_cls + g_loss_same + g_loss_vgg
+                loss = g_loss_fake + self.lambda_rec * g_loss_rec + self.lambda_cls * g_loss_cls + g_loss_same
 
                 # Logging.
                 loss_dict['G/loss_fake'] = g_loss_fake
@@ -309,9 +294,6 @@ class FCDSolver(pl.LightningModule):
                 loss_dict['G/loss_rec_id'] = g_loss_rec_id
                 loss_dict['G/loss_cls_id'] = g_loss_cls_id
                 loss_dict['G/loss_id'] = g_loss_id
-                loss_dict['G/loss_id_vgg'] = g_loss_id_vgg
-                loss_dict['G/loss_rec_vgg'] = g_loss_rec_vgg
-                loss_dict['G/loss_rec_id_vgg'] = g_loss_rec_id_vgg
             else:
                 loss = None
 
@@ -417,23 +399,26 @@ class FCDSolver(pl.LightningModule):
         return (difference > threshold).astype(np.uint8)
 
     @torch.no_grad()
-    def find_best_threshold(self, seed=42, n_samples=10000, n_thresholds=30):
+    def find_best_threshold(self, seed=42, n_samples=10000, n_thresholds=30, dataset=None):
         config = self.config
-        transform = Compose([
-            Normalize(mean=(0.5,) * config.num_channels, std=(0.5,) * config.num_channels, max_pixel_value=2 ** 16 - 1),
-            ToTensorV2(),
-        ])
-        dataset = L8BiomeDataset(root=config.l8biome_image_dir, transform=transform, mode='train', only_cloudy=True)
-        random.seed(seed)
-        indices = np.random.choice(len(dataset), n_samples, replace=False)
-        dataset.images = [img for i, img in enumerate(dataset.images) if i in indices]
+        self.G.eval()
 
-        data_loader = torch.utils.data.DataLoader(dataset=dataset, batch_size=self.batch_size, shuffle=False,
-                                                  num_workers=config.num_workers, pin_memory=False)
+        old_indices = None
+        if dataset is None:
+            dataset = get_dataset(self.config.l8biome_image_dir,
+                                   'L8Biome', 'train', self.config.num_channels,
+                                   use_h5=self.config.use_h5, shared_mem=self.config.h5_mem, mask_file='mask.tif',
+                                  ret_mask=True, only_cloudy=True, force_no_aug=True)
+        else:
+            old_indices = dataset.indices
+        random.seed(seed)
+        dataset.indices = np.random.choice(len(dataset), n_samples, replace=False)
+        data_loader = get_loader(batch_size=config.batch_size, shuffle=False,
+        use_h5=self.config.use_h5, shared_mem=self.config.h5_mem, dataset=dataset, num_workers=config.num_workers)
 
         all_preds, all_targets = [], []
         for i, sample in enumerate(tqdm(data_loader, 'Finding best threshold for train dataset')):
-            inputs = sample['image'].cuda(self.device)
+            inputs = sample['image'].to(self.device)
 
             difference_map = self.compute_difference_map(inputs)
             difference_map = difference_map.cpu().numpy().astype(np.float32)
@@ -457,6 +442,8 @@ class FCDSolver(pl.LightningModule):
             else:
                 break
 
+        if old_indices is not None:
+            dataset.indices = old_indices
         return best_threshold
 
     def visualize_predictions_sparcs(self):
@@ -568,28 +555,37 @@ class FCDSolver(pl.LightningModule):
         # save_image(difference, str(patch_output_dir / '{}_difference_{}.jpg'.format(i, 'clear' if domain == 0 else 'cloudy')))
 
     @torch.no_grad()
-    def make_psuedo_masks(self, save=False):
+    def make_psuedo_masks(self, threshold=None, save=False):
         config = self.config
-        self.restore_model(config.test_iters, only_g=True)
+        self.G.eval()
+
+        #self.restore_model(config.test_iters, only_g=True)
         # self.G.eval()  # TODO
 
-        best_threshold = self.find_best_threshold(seed=42, n_samples=10000, n_thresholds=100)
+        dataset = get_dataset(self.config.l8biome_image_dir,
+                              'L8Biome', 'train', self.config.num_channels,
+                              use_h5=self.config.use_h5, shared_mem=self.config.h5_mem, mask_file='mask.tif', ret_mask=True,
+                              only_cloudy=True, force_no_aug=True)
 
-        transform = Compose([Normalize(mean=(0.5,) * 10, std=(0.5,) * 10, max_pixel_value=2 ** 16 - 1), ToTensorV2()])
-        dataset = L8BiomeDataset(root=config.l8biome_image_dir, transform=transform, mode='train', only_cloudy=True)
+        if threshold is None:
+            best_threshold = self.find_best_threshold(seed=42, n_samples=10000, n_thresholds=100, dataset=dataset)
+        else:
+            best_threshold = threshold
 
-        data_loader = torch.utils.data.DataLoader(dataset=dataset, batch_size=self.batch_size, shuffle=False,
-                                                  num_workers=config.num_workers, pin_memory=False)
+        data_loader = get_loader(self.config.l8biome_image_dir, config.batch_size,
+                          dataset, 'train', config.num_workers,
+                          config.num_channels, force_no_aug=True, shuffle=False,
+                          use_h5=self.config.use_h5, shared_mem=config.h5_mem, init_shuffle=False)
 
         pseudo_mask_dir = os.path.join(config.result_dir, 'fcd_pseudo_masks')
         os.makedirs(pseudo_mask_dir, exist_ok=True)
 
         cm = np.zeros((2, 2))
         for i, sample in enumerate(tqdm(data_loader, 'Making Pseudo Masks')):
-            inputs = sample['image'].cuda(self.device)
+            inputs = sample['image'].to(self.device)
 
-            difference_map = self.compute_difference_map(inputs).cpu().numpy()
-            pseudo_masks = (difference_map > best_threshold).astype(np.uint8)
+            difference_map = self.compute_difference_map(inputs)
+            pseudo_masks = (difference_map > best_threshold).cpu().numpy().astype(np.uint8)
             patch_names = sample['patch_name']
 
             # Compute confusion matrix
@@ -614,15 +610,8 @@ class FCDSolver(pl.LightningModule):
 
 
     def compute_difference_map(self, inputs):
-        c_trg = torch.zeros(inputs.shape[0], 1).cuda(device=self.device, non_blocking=True)  # translate to no clouds
+        c_trg = torch.zeros(inputs.shape[0], 1).to(device=self.device)  # translate to no clouds
         x_fake = self.G(inputs, c_trg)
         difference_map = torch.abs(x_fake - inputs) / 2  # compute difference, move to [0, 1]
         difference_map = torch.mean(difference_map, dim=1)
         return difference_map
-
-    @staticmethod
-    def to_imagenet_space(img):
-        return TF.normalize(img, -1 + 2*np.array([0.485, 0.456, 0.406]), 2*np.array([0.229, 0.224, 0.225]))
-
-    def vgg_feats(self, img):
-        return 0#self.vgg(FCDSolver.to_imagenet_space(img))

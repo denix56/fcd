@@ -34,7 +34,10 @@ def main(config):
         evaluate.test_landsat8_biome_fmask(config)
         return
 
-    solver = FCDSolver(config)
+    if config.load_path is not None:
+        solver = FCDSolver.load_from_checkpoint(config.load_path, **vars(config))
+    else:
+        solver = FCDSolver(config)
 
     if config.mode == 'train':
         data = PLL8BiomeDataset(config)
@@ -59,7 +62,7 @@ def main(config):
                              precision=16 if config.mixed else 32)
         trainer.fit(solver, datamodule=data)
     elif config.mode == 'test':
-        solver.make_psuedo_masks()
+        solver.make_psuedo_masks(threshold=0.07856, save=True)
         # evaluate.test_landsat8_biome(solver, config)
     elif config.mode == 'visualize':
         # solver.visualize_predictions()
@@ -80,7 +83,6 @@ if __name__ == '__main__':
     parser.add_argument('--lambda_rec', type=float, default=10, help='weight for reconstruction loss')
     parser.add_argument('--lambda_gp', type=float, default=10, help='weight for gradient penalty')
     parser.add_argument('--lambda_id', type=float, default=10, help='weight for identity loss')
-    parser.add_argument('--lambda_vgg', type=float, default=1, help='weight for vgg loss')
 
     # Training configuration.
     parser.add_argument('--dataset', type=str, default='L8Biome', choices=['L8Biome'])
@@ -128,7 +130,7 @@ if __name__ == '__main__':
     choices=['relu', 'lrelu', 'silu'], help='activation function to use in generator')
     parser.add_argument('--use_h5', action='store_true', help='Use HDF5 dataset')
     parser.add_argument('--h5_mem', action='store_true', help='Preload the whole dataset to shared memory')
-    parser.add_argument('--use_feats', action='store_true', help='Use feats in loss')
+    parser.add_argument('--load_path', type=str, default=None, help='Path to model')
 
     config = parser.parse_args()
 
