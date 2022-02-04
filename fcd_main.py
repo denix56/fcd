@@ -80,6 +80,7 @@ if __name__ == '__main__':
     parser.add_argument('--lambda_rec', type=float, default=10, help='weight for reconstruction loss')
     parser.add_argument('--lambda_gp', type=float, default=10, help='weight for gradient penalty')
     parser.add_argument('--lambda_id', type=float, default=10, help='weight for identity loss')
+    parser.add_argument('--lambda_feat', type=float, default=1, help='weight for feat matching loss')
     parser.add_argument('--lambda_vgg', type=float, default=1, help='weight for vgg loss')
 
     # Training configuration.
@@ -129,6 +130,8 @@ if __name__ == '__main__':
     parser.add_argument('--use_h5', action='store_true', help='Use HDF5 dataset')
     parser.add_argument('--h5_mem', action='store_true', help='Preload the whole dataset to shared memory')
     parser.add_argument('--use_feats', action='store_true', help='Use feats in loss')
+    parser.add_argument('--use_vgg', action='store_true', help='Use vgg in loss')
+    parser.add_argument('--vgg_path', action='store_true', help='Path to vgg weights')
 
     config = parser.parse_args()
 

@@ -11,7 +11,7 @@ import pytorch_lightning as pl
 from pytorch_lightning.loggers import TensorBoardLogger
 from data_loader import PLL8BiomeDataset
 from supervised_solver import SupervisedSolver
-from torchvision.models import vgg19
+from models import VGG19_flex, VGG19_bn_flex
 from torchmetrics import MetricCollection, Accuracy, F1Score
 
 
@@ -22,12 +22,7 @@ def str2bool(v):
 class Pretrainer(pl.LightningModule):
     def __init__(self, num_classes=2, num_channels=3):
         super().__init__()
-        self.model = vgg19(num_classes=num_classes)
-        if num_channels != 3:
-            self.model.features = torch.nn.Sequential(
-                torch.nn.Conv2d(num_channels, self.model.features[0].out_channels, kernel_size=3, padding=1),
-                *self.model.features[1:]
-            )
+        self.model = VGG19_bn_flex(num_classes=num_classes, num_channels=num_channels)
 
         self.criterion = torch.nn.CrossEntropyLoss()
 
@@ -104,7 +99,7 @@ def main(config):
 
     trainer = pl.Trainer(logger, accelerator="gpu", devices=config.n_gpus, callbacks=[lrm, ms, cpt],
                          check_val_every_n_epoch=1, strategy=strategy,
-                         max_steps=config.num_iters, benchmark=True, fast_dev_run=True,
+                         max_steps=config.num_iters, benchmark=True, fast_dev_run=False,
                          precision=16 if config.mixed else 32)
     trainer.fit(model, datamodule=data)
 

@@ -29,7 +29,7 @@ from pytorch_lightning.utilities.distributed import rank_zero_only
 from torchmetrics import MetricCollection
 from torchmetrics import JaccardIndex, Accuracy, F1Score, ConfusionMatrix
 
-from torchvision.models import vgg19
+from models.vgg import VGG19_flex
 import torchvision.transforms.functional as TF
 
 
@@ -91,6 +91,8 @@ class FCDSolver(pl.LightningModule):
         self.act_D = config.act_D
 
         self.use_feats = config.use_feats
+        self.use_vgg = config.use_vgg
+        self.vgg_path = config.vgg_path
 
         self.save_hyperparameters(config)
 
@@ -124,29 +126,33 @@ class FCDSolver(pl.LightningModule):
             self.D = Discriminator(self.image_size, self.d_conv_dim, 
             self.c_dim, self.d_repeat_num, self.num_channels, 
             activation=self.act_D)
-
-            # self.vgg = vgg19(pretrained=True).features[:8]
-            # self.vgg.eval()
-            # self.vgg.requires_grad_(False)
+            
+            if self.use_vgg:
+                self.vgg = VGG19_flex(num_channels=10)
+                cpt = torch.load(self.vgg_path)
+                self.vgg.model.load_state_dict(cpt['model'])
+                self.vgg.model = self.vgg.model.features[:8]
+                self.vgg.eval()
+                self.vgg.requires_grad_(False)
 
     def configure_optimizers(self):
         # TODO: add self.num_iters_decay
         opt_D = torch.optim.Adam(self.D.parameters(), self.d_lr, (self.beta1, self.beta2))
-        #sched_D = torch.optim.lr_scheduler.ReduceLROnPlateau(opt_D, mode='max', patience=3)
+        sched_D = torch.optim.lr_scheduler.ReduceLROnPlateau(opt_D, mode='max', patience=3)
 
         opt_G = torch.optim.Adam(self.G.parameters(), self.g_lr, (self.beta1, self.beta2))
-        #sched_G = torch.optim.lr_scheduler.ReduceLROnPlateau(opt_G, mode='max', patience=3)
+        sched_G = torch.optim.lr_scheduler.ReduceLROnPlateau(opt_G, mode='max', patience=3)
 
         opt_D = {'optimizer': opt_D,
-                # 'lr_scheduler': {'scheduler': sched_D,
-                #                  'monitor': 'val/F1Score'
-                #                  }
+                 'lr_scheduler': {'scheduler': sched_D,
+                                  'monitor': 'val/F1Score'
+                                  }
                 }
 
         opt_G = {'optimizer': opt_G,
-                # 'lr_scheduler': {'scheduler': sched_G,
-                #                  'monitor': 'val/F1Score'
-                #                  }
+                 'lr_scheduler': {'scheduler': sched_G,
+                                  'monitor': 'val/F1Score'
+                                  }
                 }
 
         return opt_D, opt_G
@@ -288,9 +294,23 @@ class FCDSolver(pl.LightningModule):
 
                 if self.use_feats:
                     _, _, x_real_feats = self.D(x_real)
-                    g_loss_id_vgg = torch.mean(torch.abs(x_real_feats - x_fake_id_feats))
-                    g_loss_rec_vgg = torch.mean(torch.abs(x_real_feats - x_reconst_feats))
-                    g_loss_rec_id_vgg = torch.mean(torch.abs(x_real_feats - x_reconst_id_feats))
+                    g_loss_id_feat = torch.mean(torch.abs(x_real_feats - x_fake_id_feats))
+                    g_loss_rec_feat = torch.mean(torch.abs(x_real_feats - x_reconst_feats))
+                    g_loss_rec_id_feat = torch.mean(torch.abs(x_real_feats - x_reconst_id_feats))
+                    g_loss_feat = self.lambda_feat * self.lambda_rec * g_loss_rec_feat + self.lambda_feat * self.lambda_rec * g_loss_rec_id_feat \
+                                 + self.lambda_feat * self.lambda_id * g_loss_id_feat
+                else:
+                    g_loss_feat = 0
+                    
+                if self.use_vgg:
+                    x_real_vgg = self.vgg(x_real)
+                    x_fake_id_vgg = self.vgg(x_fake_id)
+                    x_reconst_vgg = self.vgg(x_reconst)
+                    x_reconst_id_vgg = self.vgg(x_reconst_id)
+                    
+                    g_loss_id_vgg = torch.mean(torch.abs(x_real_feats - x_fake_id_vgg))
+                    g_loss_rec_vgg = torch.mean(torch.abs(x_real_feats - x_reconst_vgg))
+                    g_loss_rec_id_vgg = torch.mean(torch.abs(x_real_feats - x_reconst_id_vgg))
                     g_loss_vgg = self.lambda_vgg * self.lambda_rec * g_loss_rec_vgg + self.lambda_vgg * self.lambda_rec * g_loss_rec_id_vgg \
                                  + self.lambda_vgg * self.lambda_id * g_loss_id_vgg
                 else:
@@ -299,7 +319,7 @@ class FCDSolver(pl.LightningModule):
                 # Backward and optimize.
                 g_loss_same = g_loss_fake_id + self.lambda_rec * g_loss_rec_id + self.lambda_cls * g_loss_cls_id + self.lambda_id * g_loss_id
 
-                loss = g_loss_fake + self.lambda_rec * g_loss_rec + self.lambda_cls * g_loss_cls + g_loss_same + g_loss_vgg
+                loss = g_loss_fake + self.lambda_rec * g_loss_rec + self.lambda_cls * g_loss_cls + g_loss_same + g_loss_feat + g_loss_vgg
 
                 # Logging.
                 loss_dict['G/loss_fake'] = g_loss_fake
@@ -309,6 +329,9 @@ class FCDSolver(pl.LightningModule):
                 loss_dict['G/loss_rec_id'] = g_loss_rec_id
                 loss_dict['G/loss_cls_id'] = g_loss_cls_id
                 loss_dict['G/loss_id'] = g_loss_id
+                loss_dict['G/loss_id_feat'] = g_loss_id_feat
+                loss_dict['G/loss_rec_feat'] = g_loss_rec_feat
+                loss_dict['G/loss_rec_id_feat'] = g_loss_rec_id_feat
                 loss_dict['G/loss_id_vgg'] = g_loss_id_vgg
                 loss_dict['G/loss_rec_vgg'] = g_loss_rec_vgg
                 loss_dict['G/loss_rec_id_vgg'] = g_loss_rec_id_vgg
@@ -329,8 +352,8 @@ class FCDSolver(pl.LightningModule):
                 self.d_lr_cached -= (self.d_lr / float(self.num_iters_decay))
             else:
                 self.g_lr_cached -= (self.g_lr / float(self.num_iters_decay))
-                self.update_lr(self.g_lr_cached, self.d_lr_cached)
-                print('Decayed learning rates, g_lr: {}, d_lr: {}.'.format(self.g_lr_cached, self.d_lr_cached))
+                #self.update_lr(self.g_lr_cached, self.d_lr_cached)
+                #print('Decayed learning rates, g_lr: {}, d_lr: {}.'.format(self.g_lr_cached, self.d_lr_cached))
 
         return loss
 
@@ -625,4 +648,4 @@ class FCDSolver(pl.LightningModule):
         return TF.normalize(img, -1 + 2*np.array([0.485, 0.456, 0.406]), 2*np.array([0.229, 0.224, 0.225]))
 
     def vgg_feats(self, img):
-        return 0#self.vgg(FCDSolver.to_imagenet_space(img))
+        return self.vgg(img)
