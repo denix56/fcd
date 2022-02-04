@@ -50,6 +50,7 @@ class FCDSolver(pl.LightningModule):
         self.lambda_rec = config.lambda_rec
         self.lambda_gp = config.lambda_gp
         self.lambda_id = config.lambda_id
+        self.lambda_feat = config.lambda_feat
         self.lambda_vgg = config.lambda_vgg
         self.num_channels = config.num_channels
 
@@ -130,7 +131,7 @@ class FCDSolver(pl.LightningModule):
             if self.use_vgg:
                 self.vgg = VGG19_flex(num_channels=10)
                 cpt = torch.load(self.vgg_path)
-                self.vgg.model.load_state_dict(cpt['model'])
+                self.vgg.load_state_dict(cpt['state_dict'])
                 self.vgg.model = self.vgg.model.features[:8]
                 self.vgg.eval()
                 self.vgg.requires_grad_(False)
@@ -308,9 +309,9 @@ class FCDSolver(pl.LightningModule):
                     x_reconst_vgg = self.vgg(x_reconst)
                     x_reconst_id_vgg = self.vgg(x_reconst_id)
                     
-                    g_loss_id_vgg = torch.mean(torch.abs(x_real_feats - x_fake_id_vgg))
-                    g_loss_rec_vgg = torch.mean(torch.abs(x_real_feats - x_reconst_vgg))
-                    g_loss_rec_id_vgg = torch.mean(torch.abs(x_real_feats - x_reconst_id_vgg))
+                    g_loss_id_vgg = torch.mean(torch.abs(x_real_vgg - x_fake_id_vgg))
+                    g_loss_rec_vgg = torch.mean(torch.abs(x_real_vgg - x_reconst_vgg))
+                    g_loss_rec_id_vgg = torch.mean(torch.abs(x_real_vgg - x_reconst_id_vgg))
                     g_loss_vgg = self.lambda_vgg * self.lambda_rec * g_loss_rec_vgg + self.lambda_vgg * self.lambda_rec * g_loss_rec_id_vgg \
                                  + self.lambda_vgg * self.lambda_id * g_loss_id_vgg
                 else:

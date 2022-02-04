@@ -20,7 +20,7 @@ def str2bool(v):
 def main(config):
     # For fast training.
     
-    #pl.seed_everything(8888, workers=True)
+    pl.seed_everything(8888, workers=True)
 
     # Create directories if not exist.
     if not os.path.exists(config.model_save_dir):
@@ -131,7 +131,7 @@ if __name__ == '__main__':
     parser.add_argument('--h5_mem', action='store_true', help='Preload the whole dataset to shared memory')
     parser.add_argument('--use_feats', action='store_true', help='Use feats in loss')
     parser.add_argument('--use_vgg', action='store_true', help='Use vgg in loss')
-    parser.add_argument('--vgg_path', action='store_true', help='Path to vgg weights')
+    parser.add_argument('--vgg_path', type=str, default=None, help='Path to vgg weights')
 
     config = parser.parse_args()
 

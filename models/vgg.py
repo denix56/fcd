@@ -1,5 +1,5 @@
 from torch import nn
-from torchvision.models import vgg19
+from torchvision.models import vgg19, vgg19_bn
 
 
 class VGG19_flex(nn.Module):
@@ -7,8 +7,8 @@ class VGG19_flex(nn.Module):
             super().__init__()
             self.model = vgg19(num_classes=num_classes)
             if num_channels != 3:
-                self.model.features = torch.nn.Sequential(
-                    torch.nn.Conv2d(num_channels, self.model.features[0].out_channels, kernel_size=3, padding=1),
+                self.model.features = nn.Sequential(
+                    nn.Conv2d(num_channels, self.model.features[0].out_channels, kernel_size=3, padding=1),
                     *self.model.features[1:]
                 )
             
