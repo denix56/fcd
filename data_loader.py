@@ -203,8 +203,6 @@ class L8BiomeHDFDataset(data.Dataset):
             self.masks = None
             self.labels = None
         
-        self.n_elements = self.indices.shape[0]
-        
     def __init_hdf(self):
         self.h5f = h5py.File(os.path.join(self.root, 'l8biome.h5'), 'r')
         self.images = self.h5f['{}/{}'.format(self.mode, 'images')]
@@ -215,7 +213,7 @@ class L8BiomeHDFDataset(data.Dataset):
         self.class_to_idx = {self.classes[i]: i for i in range(len(self.classes))}
         
         if self.only_cloudy:
-            self.indices = np.where(self.labels[:] == 1)
+            self.indices = np.where(self.labels[:] == 1)[0]
         else:
             self.indices = np.arange(self.labels.shape[0])
             
@@ -281,7 +279,7 @@ class L8BiomeHDFDataset(data.Dataset):
         return out
 
     def __len__(self):
-        return self.n_elements
+        return self.indices.shape[0]
         
     @staticmethod
     def worker_init_fn(worker_id, rank=None):
@@ -338,7 +336,7 @@ def get_dataset(image_dir, dataset='L8Biome', mode='train',
     transform = []
     if mode == 'train' and not force_no_aug:
         transform.append(HorizontalFlip())
-        #transform.append(VerticalFlip())
+        transform.append(VerticalFlip())
         #transform.append(ShiftScaleRotate(border_mode=cv2.BORDER_CONSTANT, value=0, mask_value=0, p=0.2))
     transform.append(Normalize(mean=(0.5,) * num_channels, std=(0.5,) * num_channels, max_pixel_value=2 ** 16 - 1))
     transform.append(ToTensorV2())
@@ -373,14 +371,14 @@ def get_loader(image_dir='', batch_size=16, dataset='L8Biome', mode='train',
         batch_size *= 2
         
     worker_init_fn = None
+
+    if use_h5 and not shared_mem:
+        if dataset == 'L8Biome' or isinstance(dataset, L8BiomeHDFDataset):
+            worker_init_fn = partial(L8BiomeHDFDataset.worker_init_fn, rank=rank)
+        else:
+            raise NotImplementedError()
     
     if isinstance(dataset, str):
-        if use_h5 and not shared_mem:
-            if dataset == 'L8Biome':
-                worker_init_fn = partial(L8BiomeHDFDataset.worker_init_fn, rank=rank)
-            else:
-                raise NotImplementedError()
-
         dataset = get_dataset(image_dir=image_dir, dataset=dataset, mode=mode,
                 num_channels=num_channels, mask_file=mask_file, ret_mask=ret_mask, keep_ratio=keep_ratio,
                 force_no_aug=force_no_aug, only_cloudy=only_cloudy,
