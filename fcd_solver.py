@@ -292,7 +292,7 @@ class FCDSolver(pl.LightningModule):
                 # Target-to-original domain.
                 mask = (c_org == 0).squeeze(1)
                 x_reconst = self.G(x_fake[mask], c_org[mask])
-                g_loss_rec = torch.mean(torch.abs(x_real - x_reconst))
+                g_loss_rec = torch.mean(torch.abs(x_real[mask] - x_reconst))
 
                 # Original-to-original domain.
                 x_reconst_id = self.G(x_fake_id, c_org)
@@ -303,7 +303,7 @@ class FCDSolver(pl.LightningModule):
                     _, _, x_real_feats = self.D(x_real)
                     _, _, x_reconst_feats = self.D(x_reconst)
                     g_loss_id_feat = torch.mean(torch.abs(x_real_feats - x_fake_id_feats))
-                    g_loss_rec_feat = torch.mean(torch.abs(x_real_feats - x_reconst_feats))
+                    g_loss_rec_feat = torch.mean(torch.abs(x_real_feats[mask] - x_reconst_feats))
                     g_loss_rec_id_feat = torch.mean(torch.abs(x_real_feats - x_reconst_id_feats))
                     g_loss_feat = self.lambda_feat * self.lambda_rec * g_loss_rec_feat + self.lambda_feat * self.lambda_rec * g_loss_rec_id_feat \
                                  + self.lambda_feat * self.lambda_id * g_loss_id_feat
