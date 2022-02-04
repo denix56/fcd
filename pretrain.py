@@ -24,6 +24,7 @@ class Pretrainer(pl.LightningModule):
         super().__init__()
         self.model = VGG19_bn_flex(num_classes=num_classes, num_channels=num_channels)
 
+
         self.criterion = torch.nn.CrossEntropyLoss()
 
         self.metrics_train = MetricCollection([Accuracy(num_classes=2, average='macro'),

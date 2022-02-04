@@ -40,7 +40,7 @@ def main(config):
         data = PLL8BiomeDataset(config)
 
         lrm = pl.callbacks.LearningRateMonitor()
-        ms = pl.callbacks.ModelSummary(max_depth=10)
+        ms = pl.callbacks.ModelSummary(max_depth=-1)
         cpt = pl.callbacks.ModelCheckpoint(config.model_save_dir, monitor='val/F1Score', mode='max')
         #dsm = pl.callbacks.DeviceStatsMonitor()
 

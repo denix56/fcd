@@ -11,6 +11,7 @@ class VGG19_flex(nn.Module):
                     nn.Conv2d(num_channels, self.model.features[0].out_channels, kernel_size=3, padding=1),
                     *self.model.features[1:]
                 )
+                self.model._initialize_weights()
             
     def forward(self, x):
         return self.model(x)
@@ -21,10 +22,11 @@ class VGG19_bn_flex(nn.Module):
             super().__init__()
             self.model = vgg19_bn(num_classes=num_classes)
             if num_channels != 3:
-                self.model.features = torch.nn.Sequential(
-                    torch.nn.Conv2d(num_channels, self.model.features[0].out_channels, kernel_size=3, padding=1),
+                self.model.features = nn.Sequential(
+                    nn.Conv2d(num_channels, self.model.features[0].out_channels, kernel_size=3, padding=1),
                     *self.model.features[1:]
                 )
+                self.model._initialize_weights()
             
     def forward(self, x):
         return self.model(x)

@@ -100,8 +100,9 @@ class Discriminator(nn.Module):
             curr_dim = curr_dim * 2
 
         kernel_size = int(image_size / np.power(2, repeat_num))
-        self.features = nn.Sequential(*layers[:7])
-        self.main = nn.Sequential(*layers[7:])
+        feature_layers = 7
+        self.features = nn.Sequential(*layers[:feature_layers])
+        self.main = nn.Sequential(*layers[feature_layers:])
         self.conv1 = nn.Conv2d(curr_dim, 1, kernel_size=3, stride=1, padding=1, bias=False)
         self.conv2 = nn.Conv2d(curr_dim, c_dim, kernel_size=kernel_size, bias=False)
         

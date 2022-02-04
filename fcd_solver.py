@@ -29,7 +29,7 @@ from pytorch_lightning.utilities.distributed import rank_zero_only
 from torchmetrics import MetricCollection
 from torchmetrics import JaccardIndex, Accuracy, F1Score, ConfusionMatrix
 
-from models.vgg import VGG19_flex
+from models.vgg import VGG19_flex, VGG19_bn_flex
 import torchvision.transforms.functional as TF
 
 
@@ -129,20 +129,27 @@ class FCDSolver(pl.LightningModule):
             activation=self.act_D)
             
             if self.use_vgg:
-                self.vgg = VGG19_flex(num_channels=10)
+                bn = True
+                if bn:
+                    self.vgg = VGG19_bn_flex(num_channels=10)
+                    layers = 11
+                else:
+                    self.vgg = VGG19_flex(num_channels=10)
+                    layers = 8
                 cpt = torch.load(self.vgg_path)
                 self.vgg.load_state_dict(cpt['state_dict'])
-                self.vgg.model = self.vgg.model.features[:8]
+                
+                self.vgg.model = self.vgg.model.features[:layers]
                 self.vgg.eval()
                 self.vgg.requires_grad_(False)
 
     def configure_optimizers(self):
         # TODO: add self.num_iters_decay
         opt_D = torch.optim.Adam(self.D.parameters(), self.d_lr, (self.beta1, self.beta2))
-        sched_D = torch.optim.lr_scheduler.ReduceLROnPlateau(opt_D, mode='max', patience=3)
+        sched_D = torch.optim.lr_scheduler.ReduceLROnPlateau(opt_D, mode='max', patience=10)
 
         opt_G = torch.optim.Adam(self.G.parameters(), self.g_lr, (self.beta1, self.beta2))
-        sched_G = torch.optim.lr_scheduler.ReduceLROnPlateau(opt_G, mode='max', patience=3)
+        sched_G = torch.optim.lr_scheduler.ReduceLROnPlateau(opt_G, mode='max', patience=10)
 
         opt_D = {'optimizer': opt_D,
                  'lr_scheduler': {'scheduler': sched_D,
@@ -283,9 +290,8 @@ class FCDSolver(pl.LightningModule):
                 g_loss_id = torch.mean(torch.abs(x_real - x_fake_id))
 
                 # Target-to-original domain.
-                x_reconst = self.G(x_fake, c_org)
-                if self.use_feats:
-                    _, _, x_reconst_feats = self.D(x_reconst)
+                mask = (c_org == 0).squeeze(1)
+                x_reconst = self.G(x_fake[mask], c_org[mask])
                 g_loss_rec = torch.mean(torch.abs(x_real - x_reconst))
 
                 # Original-to-original domain.
@@ -295,6 +301,7 @@ class FCDSolver(pl.LightningModule):
 
                 if self.use_feats:
                     _, _, x_real_feats = self.D(x_real)
+                    _, _, x_reconst_feats = self.D(x_reconst)
                     g_loss_id_feat = torch.mean(torch.abs(x_real_feats - x_fake_id_feats))
                     g_loss_rec_feat = torch.mean(torch.abs(x_real_feats - x_reconst_feats))
                     g_loss_rec_id_feat = torch.mean(torch.abs(x_real_feats - x_reconst_id_feats))
@@ -330,12 +337,14 @@ class FCDSolver(pl.LightningModule):
                 loss_dict['G/loss_rec_id'] = g_loss_rec_id
                 loss_dict['G/loss_cls_id'] = g_loss_cls_id
                 loss_dict['G/loss_id'] = g_loss_id
-                loss_dict['G/loss_id_feat'] = g_loss_id_feat
-                loss_dict['G/loss_rec_feat'] = g_loss_rec_feat
-                loss_dict['G/loss_rec_id_feat'] = g_loss_rec_id_feat
-                loss_dict['G/loss_id_vgg'] = g_loss_id_vgg
-                loss_dict['G/loss_rec_vgg'] = g_loss_rec_vgg
-                loss_dict['G/loss_rec_id_vgg'] = g_loss_rec_id_vgg
+                if self.use_feats:
+                    loss_dict['G/loss_id_feat'] = g_loss_id_feat
+                    loss_dict['G/loss_rec_feat'] = g_loss_rec_feat
+                    loss_dict['G/loss_rec_id_feat'] = g_loss_rec_id_feat
+                if self.use_vgg:
+                    loss_dict['G/loss_id_vgg'] = g_loss_id_vgg
+                    loss_dict['G/loss_rec_vgg'] = g_loss_rec_vgg
+                    loss_dict['G/loss_rec_id_vgg'] = g_loss_rec_id_vgg
             else:
                 loss = None
 
