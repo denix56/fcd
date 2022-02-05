@@ -35,7 +35,11 @@ def main(config):
         evaluate.test_landsat8_biome_fmask(config)
         return
 
-    solver = FCDSolver(config)
+    if config.load_path is not None:
+        solver = FCDSolver.load_from_checkpoint(config.load_path, **vars(config))
+        solver.D = None
+    else:
+        solver = FCDSolver(config)
 
     if config.mode == 'train':
         data = PLL8BiomeDataset(config)
@@ -60,7 +64,7 @@ def main(config):
                              precision=16 if config.mixed else 32)
         trainer.fit(solver, datamodule=data)
     elif config.mode == 'test':
-        solver.make_psuedo_masks()
+        solver.make_psuedo_masks(save=True)
         # evaluate.test_landsat8_biome(solver, config)
     elif config.mode == 'visualize':
         # solver.visualize_predictions()
