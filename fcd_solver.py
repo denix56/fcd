@@ -695,8 +695,7 @@ class FCDSolver(pl.LightningModule):
 
 
     def compute_difference_map(self, inputs):
-        c_trg = torch.zeros(inputs.shape[0], 1).cuda(device=self.device, non_blocking=True)  # translate to no clouds
-        c_trg = torch.zeros(inputs.shape[0], 1).to(device=self.device)  # translate to no clouds
+        c_trg = torch.zeros(inputs.shape[0], 1, device=self.device)  # translate to no clouds
         x_fake = self.G(inputs, c_trg)
         difference_map = torch.abs(x_fake - inputs) / 2  # compute difference, move to [0, 1]
         difference_map = torch.mean(difference_map, dim=1)
