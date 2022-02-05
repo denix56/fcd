@@ -73,6 +73,9 @@ class FCDSolver(pl.LightningModule):
         self.best_val_f1 = 0
         self.threshold = 0.1
 
+        self.interm_non_act = config.interm_non_act
+        self.n_feature_layers = config.n_feat_layers
+
         # Test configurations.
         self.test_iters = config.test_iters
 
@@ -137,7 +140,7 @@ class FCDSolver(pl.LightningModule):
             print('Building discriminator...')
             self.D = Discriminator(self.image_size, self.d_conv_dim, 
             self.c_dim, self.d_repeat_num, self.num_channels, 
-            activation=self.act_D)
+            activation=self.act_D, n_feature_layers=self.n_feature_layers, interm_non_act=self.interm_non_act)
             
             #self.G.apply(FCDSolver.initialize_weights)
             #self.D.apply(FCDSolver.initialize_weights)
@@ -316,14 +319,20 @@ class FCDSolver(pl.LightningModule):
                 #g_loss_rec = torch.mean(torch.abs(x_real - x_reconst)*difference_map)
                 
                 # Target-to-original domain.
-                mask = (c_org == 0).squeeze(1)
-                
-                mask_ne = mask.any()
-                if mask_ne:
-                    x_reconst = self.G(x_fake, c_org)
-                    g_loss_rec = torch.mean(torch.abs(x_real[mask] - x_reconst[mask]))
+                use_mask = False
+
+                if use_mask:
+                    mask = (c_org == 0).squeeze(1)
+
+                    mask_ne = mask.any()
+                    if mask_ne:
+                        x_reconst = self.G(x_fake, c_org)
+                        g_loss_rec = torch.mean(torch.abs(x_real[mask] - x_reconst[mask]))
+                    else:
+                        g_loss_rec = 0.0
                 else:
-                    g_loss_rec = 0.0
+                    x_reconst = self.G(x_fake, c_org)
+                    g_loss_rec = torch.mean(torch.abs(x_real - x_reconst))
 
                 # Original-to-original domain.
                 x_reconst_id = self.G(x_fake_id, c_org)
@@ -332,13 +341,27 @@ class FCDSolver(pl.LightningModule):
 
                 if self.use_feats:
                     _, _, x_real_feats = self.D(x_real)
-                    g_loss_id_feat = torch.mean(torch.abs(x_real_feats - x_fake_id_feats))
-                    if mask_ne:
-                        _, _, x_reconst_feats = self.D(x_reconst)
-                        g_loss_rec_feat = torch.mean(torch.abs(x_real_feats[mask] - x_reconst_feats[mask]))
+                    g_loss_id_feat = torch.mean(torch.stack([torch.mean(torch.abs(x_real_feat_i - x_fake_id_feat_i))
+                                                 for x_real_feat_i, x_fake_id_feat_i in zip(x_real_feats, x_fake_id_feats)]))
+
+                    if use_mask:
+                        if mask_ne:
+                            _, _, x_reconst_feats = self.D(x_reconst)
+                            g_loss_rec_feat = torch.mean(
+                                torch.stack([torch.mean(torch.abs(x_real_feat_i[mask] - x_reconst_feat_i[mask]))
+                                             for x_real_feat_i, x_reconst_feat_i in
+                                             zip(x_real_feats, x_reconst_feats)]))
+                        else:
+                            g_loss_rec_feat = 0.0
                     else:
-                        g_loss_rec_feat = 0.0
-                    g_loss_rec_id_feat = torch.mean(torch.abs(x_real_feats - x_reconst_id_feats))
+                        _, _, x_reconst_feats = self.D(x_reconst)
+                        g_loss_rec_feat = torch.mean(
+                            torch.stack([torch.mean(torch.abs(x_real_feat_i - x_reconst_feat_i))
+                                       for x_real_feat_i, x_reconst_feat_i in zip(x_real_feats, x_reconst_feats)]))
+                    g_loss_rec_id_feat = torch.mean(
+                            torch.stack([torch.mean(torch.abs(x_real_feat_i - x_reconst_id_feat_i))
+                                       for x_real_feat_i, x_reconst_id_feat_i in zip(x_real_feats, x_reconst_id_feats)]))
+
                     g_loss_feat = self.lambda_feat * self.lambda_rec * g_loss_rec_feat + self.lambda_feat * self.lambda_rec * g_loss_rec_id_feat \
                                  + self.lambda_feat * self.lambda_id * g_loss_id_feat
                 else:

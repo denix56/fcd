@@ -84,31 +84,40 @@ class Generator(nn.Module):
 
 class Discriminator(nn.Module):
     """Discriminator network with PatchGAN."""
-    def __init__(self, image_size=128, conv_dim=64, c_dim=5, repeat_num=6, num_channels=3, activation='lrelu'):
+    def __init__(self, image_size=128, conv_dim=64, c_dim=5, repeat_num=6, num_channels=3, activation='lrelu',
+                 n_feature_layers=4, interm_non_act=False):
         super(Discriminator, self).__init__()
         
         act_class = get_activation(activation)
+
+        if interm_non_act:
+            create_layer = lambda in_c, out_c, kernel_size, stride, padding, is_first: \
+                nn.Sequential(nn.Identity() if is_first else act_class(inplace=True),
+                              nn.Conv2d(in_c, out_c, kernel_size=kernel_size, stride=stride, padding=padding))
+        else:
+            create_layer = lambda in_c, out_c, kernel_size, stride, padding, is_first: \
+                nn.Sequential(nn.Conv2d(in_c, out_c, kernel_size=kernel_size, stride=stride, padding=padding),
+                              act_class(inplace=True))
         
         layers = []
-        layers.append(nn.Conv2d(num_channels, conv_dim, kernel_size=4, stride=2, padding=1))
-        layers.append(act_class(inplace=True))
+        layers.append(create_layer(num_channels, conv_dim, kernel_size=4, stride=2, padding=1, is_first=True))
 
         curr_dim = conv_dim
         for i in range(1, repeat_num):
-            layers.append(nn.Conv2d(curr_dim, curr_dim*2, kernel_size=4, stride=2, padding=1))
-            layers.append(act_class(inplace=True))
+            layers.append(create_layer(curr_dim, curr_dim*2, kernel_size=4, stride=2, padding=1, is_first=True))
             curr_dim = curr_dim * 2
 
         kernel_size = int(image_size / np.power(2, repeat_num))
-        feature_layers = 7
-        self.features = nn.Sequential(*layers[:feature_layers])
-        self.main = nn.Sequential(*layers[feature_layers:])
+        self.features = nn.ModuleList(layers[:n_feature_layers])
+        self.main = nn.Sequential(*layers[n_feature_layers:])
         self.conv1 = nn.Conv2d(curr_dim, 1, kernel_size=3, stride=1, padding=1, bias=False)
         self.conv2 = nn.Conv2d(curr_dim, c_dim, kernel_size=kernel_size, bias=False)
         
     def forward(self, x):
-        features = self.features(x)
-        h = self.main(features)
+        features = [self.features[0](x)]
+        for l in self.features[1:]:
+            features.append(l(features[-1]))
+        h = self.main(features[-1])
         out_src = self.conv1(h)
         out_cls = self.conv2(h)
         return out_src, out_cls.view(out_cls.size(0), out_cls.size(1)), features

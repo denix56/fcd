@@ -64,7 +64,7 @@ def main(config):
                              precision=16 if config.mixed else 32)
         trainer.fit(solver, datamodule=data)
     elif config.mode == 'test':
-        solver.make_psuedo_masks(save=True)
+        print(solver.find_best_threshold())
         # evaluate.test_landsat8_biome(solver, config)
     elif config.mode == 'visualize':
         # solver.visualize_predictions()
@@ -138,6 +138,9 @@ if __name__ == '__main__':
     parser.add_argument('--use_feats', action='store_true', help='Use feats in loss')
     parser.add_argument('--use_vgg', action='store_true', help='Use vgg in loss')
     parser.add_argument('--vgg_path', type=str, default=None, help='Path to vgg weights')
+    parser.add_argument('--n_feat_layers', type=int, default=4,
+                        help='Number of intermediate feature layers')
+    parser.add_argument('--interm_non_act', action='store_true', help='Use non-activated intermediate features from discriminator')
 
     config = parser.parse_args()
 
