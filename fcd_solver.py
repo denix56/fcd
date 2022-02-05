@@ -18,7 +18,7 @@ from torchvision.utils import save_image, make_grid
 from tqdm import tqdm
 
 import metrics
-from data_loader import get_loader, L8BiomeDataset, get_dataset
+from data_loader import get_loader, L8BiomeDataset
 from evaluate import get_metrics_dict
 from models.fixed_point_gan import Discriminator
 from models.fixed_point_gan import Generator
@@ -29,6 +29,8 @@ from pytorch_lightning.utilities.distributed import rank_zero_only
 from torchmetrics import MetricCollection
 from torchmetrics import JaccardIndex, Accuracy, F1Score, ConfusionMatrix
 
+from models.vgg import VGG19_flex, VGG19_bn_flex
+import torchvision.transforms.functional as TF
 from argparse import Namespace
 
 
@@ -52,6 +54,8 @@ class FCDSolver(pl.LightningModule):
         self.lambda_rec = config.lambda_rec
         self.lambda_gp = config.lambda_gp
         self.lambda_id = config.lambda_id
+        self.lambda_feat = config.lambda_feat
+        self.lambda_vgg = config.lambda_vgg
         self.num_channels = config.num_channels
 
         # Training configurations.
@@ -91,6 +95,10 @@ class FCDSolver(pl.LightningModule):
         self.act_G = config.act_G
         self.act_D = config.act_D
 
+        self.use_feats = config.use_feats
+        self.use_vgg = config.use_vgg
+        self.vgg_path = config.vgg_path
+
         self.save_hyperparameters(config)
 
         self.example_input_array = {'image': torch.zeros(1, self.num_channels, self.image_size, self.image_size),
@@ -113,6 +121,13 @@ class FCDSolver(pl.LightningModule):
 
         self.conf_matrix = ConfusionMatrix(num_classes=2, compute_on_step=False)
 
+    @staticmethod
+    def initialize_weights(m):
+        if isinstance(m, torch.nn.Conv2d):
+            torch.nn.init.xavier_normal_(m.weight.data)
+            if m.bias is not None:
+                m.bias.data.zero_()
+
     def build_model(self):
         """Create a generator and a discriminator."""
         if self.dataset in ['L8Biome']:
@@ -123,36 +138,50 @@ class FCDSolver(pl.LightningModule):
             self.D = Discriminator(self.image_size, self.d_conv_dim, 
             self.c_dim, self.d_repeat_num, self.num_channels, 
             activation=self.act_D)
+            
+            #self.G.apply(FCDSolver.initialize_weights)
+            #self.D.apply(FCDSolver.initialize_weights)
 
-        # if self.config.mode == 'train':
-        #     self.print_network(self.G, 'G')
-        #     self.print_network(self.D, 'D')
+            if self.use_vgg:
+                bn = True
+                if bn:
+                    self.vgg = VGG19_bn_flex(num_channels=10)
+                    layers = 11
+                else:
+                    self.vgg = VGG19_flex(num_channels=10)
+                    layers = 8
+                cpt = torch.load(self.vgg_path)
+                self.vgg.load_state_dict(cpt['state_dict'])
+                
+                self.vgg.model = self.vgg.model.features[:layers]
+                self.vgg.eval()
+                self.vgg.requires_grad_(False)
 
     def configure_optimizers(self):
         # TODO: add self.num_iters_decay
         opt_D = torch.optim.Adam(self.D.parameters(), self.d_lr, (self.beta1, self.beta2))
-        #sched_D = torch.optim.lr_scheduler.ReduceLROnPlateau(opt_D, mode='max', patience=3)
+        sched_D = torch.optim.lr_scheduler.ReduceLROnPlateau(opt_D, mode='max', patience=10)
 
         opt_G = torch.optim.Adam(self.G.parameters(), self.g_lr, (self.beta1, self.beta2))
-        #sched_G = torch.optim.lr_scheduler.ReduceLROnPlateau(opt_G, mode='max', patience=3)
+        sched_G = torch.optim.lr_scheduler.ReduceLROnPlateau(opt_G, mode='max', patience=10)
 
         opt_D = {'optimizer': opt_D,
-                # 'lr_scheduler': {'scheduler': sched_D,
-                #                  'monitor': 'val/F1Score'
-                #                  }
+                 'lr_scheduler': {'scheduler': sched_D,
+                                  'monitor': 'val/F1Score'
+                                  }
                 }
 
         opt_G = {'optimizer': opt_G,
-                # 'lr_scheduler': {'scheduler': sched_G,
-                #                  'monitor': 'val/F1Score'
-                #                  }
+                 'lr_scheduler': {'scheduler': sched_G,
+                                  'monitor': 'val/F1Score'
+                                  }
                 }
 
         return opt_D, opt_G
 
     def forward(self, x_real, c_org, c_trg, label_org, label_trg):
         x_fake = self.G(x_real, c_trg)
-        out_src, out_cls = self.D(x_fake)
+        out_src, out_cls, _ = self.D(x_fake)
 
         return out_src, out_cls
 
@@ -232,19 +261,19 @@ class FCDSolver(pl.LightningModule):
             # =================================================================================== #
 
             # Compute loss with real images.
-            out_src, out_cls = self.D(x_real)
+            out_src, out_cls, _ = self.D(x_real)
             d_loss_real = - torch.mean(out_src)
             d_loss_cls = self.classification_loss(out_cls, label_org, self.dataset)
 
             # Compute loss with fake images.
             x_fake = self.G(x_real, c_trg)
-            out_src, out_cls = self.D(x_fake.detach())
+            out_src, out_cls, _ = self.D(x_fake.detach())
             d_loss_fake = torch.mean(out_src)
 
             # Compute loss for gradient penalty.
             alpha = torch.rand(x_real.size(0), 1, 1, 1).to(self.device)
             x_hat = (alpha * x_real.data + (1 - alpha) * x_fake.data).requires_grad_(True)
-            out_src, _ = self.D(x_hat)
+            out_src, _, _ = self.D(x_hat)
             d_loss_gp = self.gradient_penalty(out_src, x_hat)
 
             # Backward and optimize.
@@ -263,28 +292,76 @@ class FCDSolver(pl.LightningModule):
             # Original-to-target domain.
             if (self.global_step + 1) % self.n_critic == 0:
                 x_fake = self.G(x_real, c_trg)
-                out_src, out_cls = self.D(x_fake)
+                out_src, out_cls, x_fake_feats = self.D(x_fake)
                 g_loss_fake = - torch.mean(out_src)
                 g_loss_cls = self.classification_loss(out_cls, label_trg, self.dataset)
 
                 # Original-to-original domain.
                 x_fake_id = self.G(x_real, c_org)
-                out_src_id, out_cls_id = self.D(x_fake_id)
+                out_src_id, out_cls_id, x_fake_id_feats = self.D(x_fake_id)
                 g_loss_fake_id = - torch.mean(out_src_id)
                 g_loss_cls_id = self.classification_loss(out_cls_id, label_org, self.dataset)
                 g_loss_id = torch.mean(torch.abs(x_real - x_fake_id))
-
+                
+                #mask = (c_org == 0).squeeze(1)
+                #mask_ne = mask.any()    
+                
+                #if mask_ne: 
+                #difference_map = torch.abs(x_fake.detach() - x_real) / 2  # compute difference, move to [0, 1]
+                #difference_map = torch.mean(difference_map, dim=1, keepdim=True)
+                #difference_map = difference_map <= self.threshold
+                #difference_map[mask] = 1
+                
+                #x_reconst = self.G(x_fake, c_org)
+                #g_loss_rec = torch.mean(torch.abs(x_real - x_reconst)*difference_map)
+                
                 # Target-to-original domain.
-                x_reconst = self.G(x_fake, c_org)
-                g_loss_rec = torch.mean(torch.abs(x_real - x_reconst))
+                mask = (c_org == 0).squeeze(1)
+                
+                mask_ne = mask.any()
+                if mask_ne:
+                    x_reconst = self.G(x_fake, c_org)
+                    g_loss_rec = torch.mean(torch.abs(x_real[mask] - x_reconst[mask]))
+                else:
+                    g_loss_rec = 0.0
 
                 # Original-to-original domain.
                 x_reconst_id = self.G(x_fake_id, c_org)
+                _, _, x_reconst_id_feats = self.D(x_reconst_id)
                 g_loss_rec_id = torch.mean(torch.abs(x_real - x_reconst_id))
+
+                if self.use_feats:
+                    _, _, x_real_feats = self.D(x_real)
+                    g_loss_id_feat = torch.mean(torch.abs(x_real_feats - x_fake_id_feats))
+                    if mask_ne:
+                        _, _, x_reconst_feats = self.D(x_reconst)
+                        g_loss_rec_feat = torch.mean(torch.abs(x_real_feats[mask] - x_reconst_feats[mask]))
+                    else:
+                        g_loss_rec_feat = 0.0
+                    g_loss_rec_id_feat = torch.mean(torch.abs(x_real_feats - x_reconst_id_feats))
+                    g_loss_feat = self.lambda_feat * self.lambda_rec * g_loss_rec_feat + self.lambda_feat * self.lambda_rec * g_loss_rec_id_feat \
+                                 + self.lambda_feat * self.lambda_id * g_loss_id_feat
+                else:
+                    g_loss_feat = 0
+                    
+                if self.use_vgg:
+                    x_real_vgg = self.vgg(x_real)
+                    x_fake_id_vgg = self.vgg(x_fake_id)
+                    x_reconst_vgg = self.vgg(x_reconst)
+                    x_reconst_id_vgg = self.vgg(x_reconst_id)
+                    
+                    g_loss_id_vgg = torch.mean(torch.abs(x_real_vgg - x_fake_id_vgg))
+                    g_loss_rec_vgg = torch.mean(torch.abs(x_real_vgg - x_reconst_vgg))
+                    g_loss_rec_id_vgg = torch.mean(torch.abs(x_real_vgg - x_reconst_id_vgg))
+                    g_loss_vgg = self.lambda_vgg * self.lambda_rec * g_loss_rec_vgg + self.lambda_vgg * self.lambda_rec * g_loss_rec_id_vgg \
+                                 + self.lambda_vgg * self.lambda_id * g_loss_id_vgg
+                else:
+                    g_loss_vgg = 0
 
                 # Backward and optimize.
                 g_loss_same = g_loss_fake_id + self.lambda_rec * g_loss_rec_id + self.lambda_cls * g_loss_cls_id + self.lambda_id * g_loss_id
-                loss = g_loss_fake + self.lambda_rec * g_loss_rec + self.lambda_cls * g_loss_cls + g_loss_same
+
+                loss = g_loss_fake + self.lambda_rec * g_loss_rec + self.lambda_cls * g_loss_cls + g_loss_same + g_loss_feat + g_loss_vgg
 
                 # Logging.
                 loss_dict['G/loss_fake'] = g_loss_fake
@@ -294,6 +371,14 @@ class FCDSolver(pl.LightningModule):
                 loss_dict['G/loss_rec_id'] = g_loss_rec_id
                 loss_dict['G/loss_cls_id'] = g_loss_cls_id
                 loss_dict['G/loss_id'] = g_loss_id
+                if self.use_feats:
+                    loss_dict['G/loss_id_feat'] = g_loss_id_feat
+                    loss_dict['G/loss_rec_feat'] = g_loss_rec_feat
+                    loss_dict['G/loss_rec_id_feat'] = g_loss_rec_id_feat
+                if self.use_vgg:
+                    loss_dict['G/loss_id_vgg'] = g_loss_id_vgg
+                    loss_dict['G/loss_rec_vgg'] = g_loss_rec_vgg
+                    loss_dict['G/loss_rec_id_vgg'] = g_loss_rec_id_vgg
             else:
                 loss = None
 
@@ -311,8 +396,8 @@ class FCDSolver(pl.LightningModule):
                 self.d_lr_cached -= (self.d_lr / float(self.num_iters_decay))
             else:
                 self.g_lr_cached -= (self.g_lr / float(self.num_iters_decay))
-                self.update_lr(self.g_lr_cached, self.d_lr_cached)
-                print('Decayed learning rates, g_lr: {}, d_lr: {}.'.format(self.g_lr_cached, self.d_lr_cached))
+                #self.update_lr(self.g_lr_cached, self.d_lr_cached)
+                #print('Decayed learning rates, g_lr: {}, d_lr: {}.'.format(self.g_lr_cached, self.d_lr_cached))
 
         return loss
 
@@ -610,8 +695,16 @@ class FCDSolver(pl.LightningModule):
 
 
     def compute_difference_map(self, inputs):
+        c_trg = torch.zeros(inputs.shape[0], 1).cuda(device=self.device, non_blocking=True)  # translate to no clouds
         c_trg = torch.zeros(inputs.shape[0], 1).to(device=self.device)  # translate to no clouds
         x_fake = self.G(inputs, c_trg)
         difference_map = torch.abs(x_fake - inputs) / 2  # compute difference, move to [0, 1]
         difference_map = torch.mean(difference_map, dim=1)
         return difference_map
+
+    @staticmethod
+    def to_imagenet_space(img):
+        return TF.normalize(img, -1 + 2*np.array([0.485, 0.456, 0.406]), 2*np.array([0.229, 0.224, 0.225]))
+
+    def vgg_feats(self, img):
+        return self.vgg(img)

@@ -1,70 +1,108 @@
-from fcd_solver import FCDSolver
-from data_loader import get_loader
-
 import os
 import argparse
 
 import torch
 
+from fcd_solver import FCDSolver
+from data_loader import get_loader
 from torch.backends import cudnn
 import evaluate
 import pytorch_lightning as pl
 from pytorch_lightning.loggers import TensorBoardLogger
 from data_loader import PLL8BiomeDataset
 from supervised_solver import SupervisedSolver
+from models import VGG19_flex, VGG19_bn_flex
+from torchmetrics import MetricCollection, Accuracy, F1Score
 
 
 def str2bool(v):
     return v.lower() in ('true')
 
 
+class Pretrainer(pl.LightningModule):
+    def __init__(self, num_classes=2, num_channels=3):
+        super().__init__()
+        self.model = VGG19_bn_flex(num_classes=num_classes, num_channels=num_channels)
+
+
+        self.criterion = torch.nn.CrossEntropyLoss()
+
+        self.metrics_train = MetricCollection([Accuracy(num_classes=2, average='macro'),
+                                             F1Score(num_classes=2, average='macro')], prefix='train/')
+        self.metrics_val = MetricCollection([Accuracy(num_classes=2, average='macro', compute_on_step=False),
+                                             F1Score(num_classes=2, average='macro', compute_on_step=False)], prefix='val/')
+
+    def forward(self, x_real, c_org, c_trg, label_org, label_trg):
+        out = self.model(x_real)
+        return out
+
+    def training_step(self, batch, batch_idx):
+        x_real, c_org, c_trg, label_org, label_trg = batch
+        c_org = c_org.squeeze(1).long()
+        out = self.model(x_real)
+        loss = self.criterion(out, c_org)
+
+        self.log('train/loss', loss)
+
+        out = torch.softmax(out.detach(), dim=-1).max(1).indices
+        metrics = self.metrics_train(out, c_org)
+        self.log_dict(metrics)
+
+        return loss
+
+    def validation_step(self, batch, batch_idx):
+        x_real, c_org, c_trg, label_org, label_trg, _ = batch
+        c_org = c_org.squeeze(1).long()
+        out = self.model(x_real)
+        out = torch.softmax(out, dim=-1).max(1).indices
+
+        self.metrics_val(out, c_org)
+
+    def validation_epoch_end(self, val_step_outputs):
+        metrics = self.metrics_val.compute()
+        self.log_dict(metrics)
+        self.metrics_val.reset()
+
+    def configure_optimizers(self):
+        opt = torch.optim.Adam(self.model.parameters(), lr=1e-4, weight_decay=1e-6)
+        sched = torch.optim.lr_scheduler.ReduceLROnPlateau(opt, mode='max')
+        opt = {'optimizer': opt,
+                'lr_scheduler': {'scheduler': sched,
+                                 'monitor': 'val/F1Score'
+                                 }
+                }
+
+        return opt
+
+
 def main(config):
     # For fast training.
-    
+
     pl.seed_everything(8888, workers=True)
 
-    # Create directories if not exist.
-    if not os.path.exists(config.model_save_dir):
-        os.makedirs(config.model_save_dir, exist_ok=True)
-    if not os.path.exists(config.sample_dir):
-        os.makedirs(config.sample_dir, exist_ok=True)
-    if not os.path.exists(config.result_dir):
-        os.makedirs(config.result_dir, exist_ok=True)
+    model = Pretrainer(num_channels=10)
 
-    if config.mode == 'eval_fmask':
-        evaluate.test_landsat8_biome_fmask(config)
-        return
+    data = PLL8BiomeDataset(config)
 
-    solver = FCDSolver(config)
+    lrm = pl.callbacks.LearningRateMonitor()
+    ms = pl.callbacks.ModelSummary(max_depth=10)
+    cpt = pl.callbacks.ModelCheckpoint(config.model_save_dir, monitor='val/F1Score', mode='max')
+    # dsm = pl.callbacks.DeviceStatsMonitor()
 
-    if config.mode == 'train':
-        data = PLL8BiomeDataset(config)
+    logger = TensorBoardLogger('runs', name=config.experiment_name, log_graph=True)
 
-        lrm = pl.callbacks.LearningRateMonitor()
-        ms = pl.callbacks.ModelSummary(max_depth=-1)
-        cpt = pl.callbacks.ModelCheckpoint(config.model_save_dir, monitor='val/F1Score', mode='max')
-        #dsm = pl.callbacks.DeviceStatsMonitor()
+    strategy = None
+    if config.n_gpus > 1:
+        if config.h5_mem:
+            strategy = 'ddp_spawn'
+        else:
+            strategy = 'ddp'
 
-        logger = TensorBoardLogger('runs', name=config.experiment_name, log_graph=True)
-        
-        strategy = None
-        if config.n_gpus > 1:
-            if config.h5_mem:
-                strategy = 'ddp_spawn'
-            else:
-                strategy = 'ddp'
-        
-        trainer = pl.Trainer(logger, accelerator="gpu", devices=config.n_gpus, callbacks=[lrm, ms, cpt],
-                             check_val_every_n_epoch=1, strategy=strategy,
-                             max_steps=config.num_iters, benchmark=True, fast_dev_run=False,
-                             precision=16 if config.mixed else 32)
-        trainer.fit(solver, datamodule=data)
-    elif config.mode == 'test':
-        solver.make_psuedo_masks()
-        # evaluate.test_landsat8_biome(solver, config)
-    elif config.mode == 'visualize':
-        # solver.visualize_predictions()
-        solver.visualize_translations()
+    trainer = pl.Trainer(logger, accelerator="gpu", devices=config.n_gpus, callbacks=[lrm, ms, cpt],
+                         check_val_every_n_epoch=1, strategy=strategy,
+                         max_steps=config.num_iters, benchmark=True, fast_dev_run=False,
+                         precision=16 if config.mixed else 32)
+    trainer.fit(model, datamodule=data)
 
 
 if __name__ == '__main__':
@@ -81,7 +119,6 @@ if __name__ == '__main__':
     parser.add_argument('--lambda_rec', type=float, default=10, help='weight for reconstruction loss')
     parser.add_argument('--lambda_gp', type=float, default=10, help='weight for gradient penalty')
     parser.add_argument('--lambda_id', type=float, default=10, help='weight for identity loss')
-    parser.add_argument('--lambda_feat', type=float, default=1, help='weight for feat matching loss')
     parser.add_argument('--lambda_vgg', type=float, default=1, help='weight for vgg loss')
 
     # Training configuration.
@@ -112,7 +149,8 @@ if __name__ == '__main__':
 
     # Directories.
     parser.add_argument('--l8biome_image_dir', type=str, default='data/L8Biome', help='path to patch data')
-    parser.add_argument('--orig_image_dir', type=str, default='/media/data/landsat8-biome', help='path to complete scenes')
+    parser.add_argument('--orig_image_dir', type=str, default='/media/data/landsat8-biome',
+                        help='path to complete scenes')
     parser.add_argument('--model_save_dir', type=str, default='outputs/models')
     parser.add_argument('--sample_dir', type=str, default='outputs/samples')
     parser.add_argument('--result_dir', type=str, default='outputs/results')
@@ -124,16 +162,13 @@ if __name__ == '__main__':
     parser.add_argument('--lr_update_step', type=int, default=1000)
     parser.add_argument('--val_n_epoch', type=int, default=1)
     parser.add_argument('--mixed', action='store_true', help='Use mixed precision')
-    parser.add_argument('--act_D', type=str, default='lrelu', 
-    choices=['relu', 'lrelu', 'silu'], help='activation function to use in discriminator')
-    parser.add_argument('--act_G', type=str, default='relu', 
-    choices=['relu', 'lrelu', 'silu'], help='activation function to use in generator')
+    parser.add_argument('--act_D', type=str, default='lrelu',
+                        choices=['relu', 'lrelu', 'silu'], help='activation function to use in discriminator')
+    parser.add_argument('--act_G', type=str, default='relu',
+                        choices=['relu', 'lrelu', 'silu'], help='activation function to use in generator')
     parser.add_argument('--use_h5', action='store_true', help='Use HDF5 dataset')
     parser.add_argument('--h5_mem', action='store_true', help='Preload the whole dataset to shared memory')
-    parser.add_argument('--load_path', type=str, default=None, help='Path to model')
     parser.add_argument('--use_feats', action='store_true', help='Use feats in loss')
-    parser.add_argument('--use_vgg', action='store_true', help='Use vgg in loss')
-    parser.add_argument('--vgg_path', type=str, default=None, help='Path to vgg weights')
 
     config = parser.parse_args()
 
