@@ -1,10 +1,11 @@
+from fcd_solver import FCDSolver
+from data_loader import get_loader
+
 import os
 import argparse
 
 import torch
 
-from fcd_solver import FCDSolver
-from data_loader import get_loader
 from torch.backends import cudnn
 import evaluate
 import pytorch_lightning as pl
