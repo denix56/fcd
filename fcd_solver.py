@@ -33,6 +33,10 @@ from models.vgg import VGG19_flex, VGG19_bn_flex
 import torchvision.transforms.functional as TF
 from argparse import Namespace
 
+from datetime import datetime
+import io
+import itertools
+
 
 class FCDSolver(pl.LightningModule):
     """Solver for training and testing Fixed-Point GAN for Cloud Detection."""
@@ -121,6 +125,7 @@ class FCDSolver(pl.LightningModule):
         self.metrics_val = MetricCollection([Accuracy(num_classes=2, average='macro', compute_on_step=False),
                                              JaccardIndex(num_classes=2, compute_on_step=False),
                                              F1Score(num_classes=2, average='macro', compute_on_step=False)], prefix='val/')
+        self.metrics_val_class = MetricCollection([F1Score(num_classes=2, average='none', compute_on_step=False)], prefix='val/class/')
 
         self.conf_matrix = ConfusionMatrix(num_classes=2, compute_on_step=False)
 
@@ -423,6 +428,38 @@ class FCDSolver(pl.LightningModule):
                 #print('Decayed learning rates, g_lr: {}, d_lr: {}.'.format(self.g_lr_cached, self.d_lr_cached))
 
         return loss
+        
+        
+    @staticmethod
+    def plot_confusion_matrix(cm, class_names):
+      """
+      Returns a matplotlib figure containing the plotted confusion matrix.
+
+      Args:
+        cm (array, shape = [n, n]): a confusion matrix of integer classes
+        class_names (array, shape = [n]): String names of the integer classes
+      """
+      figure = plt.figure(figsize=(8, 8))
+      plt.imshow(cm, interpolation='nearest', cmap=plt.cm.Blues)
+      plt.title("Confusion matrix")
+      plt.colorbar()
+      tick_marks = np.arange(len(class_names))
+      plt.xticks(tick_marks, class_names, rotation=45)
+      plt.yticks(tick_marks, class_names)
+
+      # Compute the labels from the normalized confusion matrix.
+      labels = np.around(cm.astype('float') / cm.sum(axis=1)[:, np.newaxis], decimals=2)
+
+      # Use white text if squares are dark; otherwise black.
+      threshold = cm.max() / 2.
+      for i, j in itertools.product(range(cm.shape[0]), range(cm.shape[1])):
+        color = "white" if cm[i, j] > threshold else "black"
+        plt.text(j, i, labels[i, j], horizontalalignment="center", color=color)
+
+      plt.tight_layout()
+      plt.ylabel('True label')
+      plt.xlabel('Predicted label')
+      return figure
 
 
     @torch.no_grad()
@@ -465,8 +502,8 @@ class FCDSolver(pl.LightningModule):
         target = target[valid_mask] - 1
 
         self.conf_matrix(prediction, target)
-
         self.metrics_val(prediction, target)
+        self.metrics_val_class(prediction, target)
         #self.cm += metrics.compute_confusion_matrix(prediction.cpu().numpy().flatten(), target.cpu().numpy().flatten(), num_classes=2)
 
 
@@ -474,6 +511,12 @@ class FCDSolver(pl.LightningModule):
         metrics_dict = self.metrics_val.compute()
         self.log_dict(metrics_dict)
         self.metrics_val.reset()
+        
+        metrics_class_dict = self.metrics_val_class.compute()
+        for k, vv in metrics_class_dict.items():
+            for i, v in enumerate(vv):
+                self.log('{}/{}'.format(k, i), v)
+        self.metrics_val_class.reset()
         
         #print(self.cm)
         #self.cm = np.zeros((2, 2))
@@ -483,7 +526,11 @@ class FCDSolver(pl.LightningModule):
             print(cm)
             acc, iou, f1 = metrics.accuracy(cm), metrics.iou_score(cm), metrics.f1_score(cm)
             print('Validation Result: Accuracy={:.2%}, IoU={:.4}, F1={:.4}'.format(acc, iou, f1))
+            
+            self.logger.experiment.add_figure('Confusion matrix', FCDSolver.plot_confusion_matrix(cm, ['clear', 'cloudy']), self.global_step)
         self.conf_matrix.reset()
+        
+        
 
     # Alternating schedule for optimizer steps (i.e.: GANs)
     def optimizer_step(self, epoch, batch_idx, optimizer, optimizer_idx,
