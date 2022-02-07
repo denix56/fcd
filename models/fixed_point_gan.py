@@ -12,6 +12,8 @@ def get_activation(activation):
         act_class = lrelu
     elif activation == 'silu':
         act_class = nn.SiLU
+    elif activation == 'mish':
+        act_class = nn.Mish
     else:
         raise NotImplementedError()
     return act_class
@@ -85,7 +87,7 @@ class Generator(nn.Module):
 class Discriminator(nn.Module):
     """Discriminator network with PatchGAN."""
     def __init__(self, image_size=128, conv_dim=64, c_dim=5, repeat_num=6, num_channels=3, activation='lrelu',
-                 n_feature_layers=4, interm_non_act=False):
+                 n_feature_layers=4, interm_non_act=False, use_attention=False):
         super(Discriminator, self).__init__()
         
         act_class = get_activation(activation)
@@ -104,6 +106,8 @@ class Discriminator(nn.Module):
 
         curr_dim = conv_dim
         for i in range(1, repeat_num):
+            #if (i+1) % 3 == 0:
+                #layers.append(nn.Multi)
             layers.append(create_layer(curr_dim, curr_dim*2, kernel_size=4, stride=2, padding=1, is_first=False))
             curr_dim = curr_dim * 2
 

@@ -141,6 +141,9 @@ if __name__ == '__main__':
     parser.add_argument('--n_feat_layers', type=int, default=4,
                         help='Number of intermediate feature layers')
     parser.add_argument('--interm_non_act', action='store_true', help='Use non-activated intermediate features from discriminator')
+    parser.add_argument('--init_type', type=str, choices=['none', 'xn', 'xu', 'ortho'], help='NN init type')
+    parser.add_argument('--use_attention', action='store_true', help='Use attention in discriminator')
+
 
     config = parser.parse_args()
 

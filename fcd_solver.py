@@ -76,6 +76,7 @@ class FCDSolver(pl.LightningModule):
         self.resume_iters = config.resume_iters
         self.best_val_f1 = 0
         self.threshold = 0.1
+        self.init_type = config.init_type
 
         self.interm_non_act = config.interm_non_act
         self.n_feature_layers = config.n_feat_layers
@@ -105,6 +106,8 @@ class FCDSolver(pl.LightningModule):
         self.use_feats = config.use_feats
         self.use_vgg = config.use_vgg
         self.vgg_path = config.vgg_path
+        
+        self.use_attention = config.use_attention
 
         self.save_hyperparameters(config)
 
@@ -132,9 +135,17 @@ class FCDSolver(pl.LightningModule):
     @staticmethod
     def initialize_weights(m):
         if isinstance(m, torch.nn.Conv2d):
-            torch.nn.init.xavier_normal_(m.weight.data)
-            if m.bias is not None:
-                m.bias.data.zero_()
+            if self.init_type != 'none':
+                if self.init_type == 'xn':
+                    torch.nn.init.xavier_normal_(m.weight.data)
+                elif self.init_type == 'xu':
+                    torch.nn.init.xavier_uniform_(m.weight.data)
+                elif self.init_type == 'ortho':
+                    torch.nn.init.orthogonal_(m.weight.data)
+                else:
+                    raise NotImplementedError()
+                if m.bias is not None:
+                    m.bias.data.zero_()
 
     def build_model(self):
         """Create a generator and a discriminator."""
@@ -145,10 +156,12 @@ class FCDSolver(pl.LightningModule):
             print('Building discriminator...')
             self.D = Discriminator(self.image_size, self.d_conv_dim, 
             self.c_dim, self.d_repeat_num, self.num_channels, 
-            activation=self.act_D, n_feature_layers=self.n_feature_layers, interm_non_act=self.interm_non_act)
+            activation=self.act_D, n_feature_layers=self.n_feature_layers, 
+            interm_non_act=self.interm_non_act,
+            use_attention=self.use_attention)
             
-            #self.G.apply(FCDSolver.initialize_weights)
-            #self.D.apply(FCDSolver.initialize_weights)
+            self.G.apply(FCDSolver.initialize_weights)
+            self.D.apply(FCDSolver.initialize_weights)
 
             if self.use_vgg:
                 bn = True
