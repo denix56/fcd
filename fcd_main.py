@@ -129,9 +129,9 @@ if __name__ == '__main__':
     parser.add_argument('--val_n_epoch', type=int, default=1)
     parser.add_argument('--mixed', action='store_true', help='Use mixed precision')
     parser.add_argument('--act_D', type=str, default='lrelu', 
-    choices=['relu', 'lrelu', 'silu'], help='activation function to use in discriminator')
+    choices=['relu', 'lrelu', 'silu', 'mish'], help='activation function to use in discriminator')
     parser.add_argument('--act_G', type=str, default='relu', 
-    choices=['relu', 'lrelu', 'silu'], help='activation function to use in generator')
+    choices=['relu', 'lrelu', 'silu', 'mish'], help='activation function to use in generator')
     parser.add_argument('--use_h5', action='store_true', help='Use HDF5 dataset')
     parser.add_argument('--h5_mem', action='store_true', help='Preload the whole dataset to shared memory')
     parser.add_argument('--load_path', type=str, default=None, help='Path to model')
@@ -141,7 +141,7 @@ if __name__ == '__main__':
     parser.add_argument('--n_feat_layers', type=int, default=4,
                         help='Number of intermediate feature layers')
     parser.add_argument('--interm_non_act', action='store_true', help='Use non-activated intermediate features from discriminator')
-    parser.add_argument('--init_type', type=str, choices=['none', 'xn', 'xu', 'ortho'], help='NN init type')
+    parser.add_argument('--init_type', type=str, choices=['none', 'xn', 'xu', 'ortho'], default='none', help='NN init type')
     parser.add_argument('--use_attention', action='store_true', help='Use attention in discriminator')
 
 

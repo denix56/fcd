@@ -132,8 +132,7 @@ class FCDSolver(pl.LightningModule):
 
         self.conf_matrix = ConfusionMatrix(num_classes=2, compute_on_step=False)
 
-    @staticmethod
-    def initialize_weights(m):
+    def initialize_weights(self, m):
         if isinstance(m, torch.nn.Conv2d):
             if self.init_type != 'none':
                 if self.init_type == 'xn':
@@ -160,8 +159,8 @@ class FCDSolver(pl.LightningModule):
             interm_non_act=self.interm_non_act,
             use_attention=self.use_attention)
             
-            self.G.apply(FCDSolver.initialize_weights)
-            self.D.apply(FCDSolver.initialize_weights)
+            self.G.apply(self.initialize_weights)
+            self.D.apply(self.initialize_weights)
 
             if self.use_vgg:
                 bn = True

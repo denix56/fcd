@@ -84,6 +84,19 @@ class Generator(nn.Module):
         return x_fake
 
 
+class AttnLayer(nn.Module):
+    def __init__(self, embed_dim, num_heads=4):
+        super().__init__()
+        self.attn = nn.MultiheadAttention(embed_dim, num_heads, dropout=0.15, batch_first=True)
+
+    def forward(self, x):
+        b, c, h, w = x.shape
+        x = x.flatten(start_dim=2).permute(0, 2, 1)
+        x, _ = self.attn(x, x, x, need_weights=False)
+        x = x.permute(0, 2, 1).view(b, c, h, w)
+        return x
+
+
 class Discriminator(nn.Module):
     """Discriminator network with PatchGAN."""
     def __init__(self, image_size=128, conv_dim=64, c_dim=5, repeat_num=6, num_channels=3, activation='lrelu',
@@ -106,8 +119,8 @@ class Discriminator(nn.Module):
 
         curr_dim = conv_dim
         for i in range(1, repeat_num):
-            #if (i+1) % 3 == 0:
-                #layers.append(nn.Multi)
+            if (i+1) % 3 == 0:
+                layers.append(AttnLayer(curr_dim))
             layers.append(create_layer(curr_dim, curr_dim*2, kernel_size=4, stride=2, padding=1, is_first=False))
             curr_dim = curr_dim * 2
 
