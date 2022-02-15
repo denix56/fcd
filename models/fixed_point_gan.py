@@ -119,8 +119,9 @@ class Discriminator(nn.Module):
 
         curr_dim = conv_dim
         for i in range(1, repeat_num):
-            if (i+1) % 3 == 0:
-                layers.append(AttnLayer(curr_dim))
+            if use_attention:
+                if (i+1) % 3 == 0:
+                    layers.append(AttnLayer(curr_dim))
             layers.append(create_layer(curr_dim, curr_dim*2, kernel_size=4, stride=2, padding=1, is_first=False))
             curr_dim = curr_dim * 2
 
