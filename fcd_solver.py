@@ -75,7 +75,7 @@ class FCDSolver(pl.LightningModule):
         self.beta2 = config.beta2
         self.resume_iters = config.resume_iters
         self.best_val_f1 = 0
-        self.threshold = 0.1
+        self.threshold = 0.07
         self.init_type = config.init_type
 
         self.interm_non_act = config.interm_non_act
@@ -279,6 +279,7 @@ class FCDSolver(pl.LightningModule):
             # =================================================================================== #
             #                             2. Train the discriminator                              #
             # =================================================================================== #
+            #x_real = x_real + 0.01 * torch.randn_like(x_real)
 
             # Compute loss with real images.
             out_src, out_cls, _ = self.D(x_real)
@@ -579,7 +580,7 @@ class FCDSolver(pl.LightningModule):
         else:
             old_indices = dataset.indices
         random.seed(seed)
-        dataset.indices = np.random.choice(len(dataset), n_samples, replace=False)
+        dataset.indices = np.random.choice(len(dataset), min(n_samples, len(dataset)), replace=False)
         data_loader = get_loader(batch_size=config.batch_size, shuffle=False,
         use_h5=self.config.use_h5, shared_mem=self.config.h5_mem, dataset=dataset, num_workers=config.num_workers)
 

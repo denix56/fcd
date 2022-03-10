@@ -2,7 +2,7 @@ from glob import glob
 
 from albumentations import HorizontalFlip, VerticalFlip, RandomBrightnessContrast, Normalize, Compose
 from albumentations.augmentations.geometric.transforms import Affine
-rom albumentations.augmentations.transforms import GaussNoise
+from albumentations.augmentations.transforms import GaussNoise
 from tifffile import tifffile
 from torch.utils import data
 from PIL import Image
@@ -205,7 +205,7 @@ class L8BiomeHDFDataset(data.Dataset):
             self.labels = None
         
     def __init_hdf(self):
-        self.h5f = h5py.File(os.path.join(self.root, 'l8biome.h5'), 'r')
+        self.h5f = h5py.File(os.path.join(self.root, 'copernic.h5'), 'r')
         self.images = self.h5f['{}/{}'.format(self.mode, 'images')]
         self.masks = self.h5f['{}/{}'.format(self.mode, 'masks')]
         self.labels = self.h5f['{}/{}'.format(self.mode, 'labels')]
@@ -336,7 +336,6 @@ def get_dataset(image_dir, dataset='L8Biome', mode='train',
     """Build and return a dataset."""
     transform = []
     if mode == 'train' and not force_no_aug:
-        transform.append(GaussNoise(p=0.15))
         transform.append(HorizontalFlip())
         transform.append(VerticalFlip())
         transform.append(Affine(translate_percent=0.2))
