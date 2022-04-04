@@ -36,6 +36,7 @@ from argparse import Namespace
 from datetime import datetime
 import io
 import itertools
+import h5py
 
 
 class FCDSolver(pl.LightningModule):
@@ -474,7 +475,6 @@ class FCDSolver(pl.LightningModule):
       plt.xlabel('Predicted label')
       return figure
 
-
     @torch.no_grad()
     @rank_zero_only
     def visualize(self):
@@ -620,6 +620,7 @@ class FCDSolver(pl.LightningModule):
 
         batch_size = 1
         dataset = get_loader('/media/data/SPARCS', batch_size=batch_size, dataset='L8Sparcs', mode='test',
+
                              num_channels=10)
 
         with torch.no_grad():
@@ -723,49 +724,67 @@ class FCDSolver(pl.LightningModule):
         # save_image(difference, str(patch_output_dir / '{}_difference_{}.jpg'.format(i, 'clear' if domain == 0 else 'cloudy')))
 
     @torch.no_grad()
-    def make_psuedo_masks(self, threshold=None, save=False):
+    def make_psuedo_masks(self, threshold=None, save=False, h5=True):
         config = self.config
         self.G.eval()
 
         #self.restore_model(config.test_iters, only_g=True)
         # self.G.eval()  # TODO
 
-        dataset = get_dataset(self.config.l8biome_image_dir,
-                              'L8Biome', 'train', self.config.num_channels,
-                              use_h5=self.config.use_h5, shared_mem=self.config.h5_mem, mask_file='mask.tif', ret_mask=True,
-                              only_cloudy=True, force_no_aug=True)
-
-        if threshold is None:
-            best_threshold = self.find_best_threshold(seed=42, n_samples=10000, n_thresholds=100, dataset=dataset)
-        else:
-            best_threshold = threshold
-
-        data_loader = get_loader(self.config.l8biome_image_dir, config.batch_size,
-                          dataset, 'train', config.num_workers,
-                          config.num_channels, force_no_aug=True, shuffle=False,
-                          use_h5=self.config.use_h5, shared_mem=config.h5_mem, init_shuffle=False)
-
         pseudo_mask_dir = os.path.join(config.result_dir, 'fcd_pseudo_masks')
         os.makedirs(pseudo_mask_dir, exist_ok=True)
 
-        cm = np.zeros((2, 2))
-        for i, sample in enumerate(tqdm(data_loader, 'Making Pseudo Masks')):
-            inputs = sample['image'].to(self.device)
+        dataset = get_dataset(self.config.l8biome_image_dir,
+                              'L8Biome', 'train', self.config.num_channels,
+                              use_h5=self.config.use_h5, shared_mem=self.config.h5_mem, mask_file='mask.tif',
+                              ret_mask=True,
+                              only_cloudy=True, force_no_aug=True)
 
-            difference_map = self.compute_difference_map(inputs)
-            pseudo_masks = (difference_map > best_threshold).cpu().numpy().astype(np.uint8)
-            patch_names = sample['patch_name']
+        def create_pseudo_masks(dataset, h5_ds=None):
+            if threshold is None:
+                best_threshold = self.find_best_threshold(seed=42, n_samples=10000, n_thresholds=100, dataset=dataset)
+            else:
+                best_threshold = threshold
 
-            # Compute confusion matrix
-            targets = sample['mask'].numpy()
-            valid_mask = targets > 0
-            y_true = targets[valid_mask] - 1
-            y_pred = pseudo_masks[valid_mask]
-            cm += metrics.compute_confusion_matrix(y_pred, y_true, num_classes=2)
+            data_loader = get_loader(self.config.l8biome_image_dir, config.batch_size,
+                                     dataset, 'train', config.num_workers,
+                                     config.num_channels, force_no_aug=True, shuffle=False,
+                                     use_h5=self.config.use_h5, shared_mem=config.h5_mem, init_shuffle=False)
+            cm = np.zeros((2, 2))
+            idx = 0
+            for i, sample in enumerate(tqdm(data_loader, 'Making Pseudo Masks')):
+                inputs = sample['image'].to(self.device)
 
-            if save:
-                for pseudo_mask, patch_name in zip(pseudo_masks, patch_names):
-                    tifffile.imwrite(os.path.join(pseudo_mask_dir, f'{patch_name}.tiff'), pseudo_mask)
+                difference_map = self.compute_difference_map(inputs)
+                pseudo_masks = (difference_map > best_threshold).cpu().numpy().astype(np.uint8)
+                patch_names = sample['patch_name']
+
+                # Compute confusion matrix
+                targets = sample['mask'].numpy()
+                valid_mask = targets > 0
+                y_true = targets[valid_mask] - 1
+                y_pred = pseudo_masks[valid_mask]
+                cm += metrics.compute_confusion_matrix(y_pred, y_true, num_classes=2)
+                pseudo_masks += 1
+                pseudo_masks[~valid_mask] = 0
+
+                if save:
+                    for pseudo_mask, patch_name in zip(pseudo_masks, patch_names):
+                        if h5_ds:
+                            h5_ds[idx] = pseudo_mask
+                            idx += 1
+                        else:
+                            tifffile.imwrite(os.path.join(pseudo_mask_dir, f'{patch_name}.tiff'), pseudo_mask)
+
+            return cm
+
+        if save and h5:
+            with h5py.File('pseudo_masks.h5', 'w') as h5f:
+                grp = h5f.create_group('train')
+                h5_ds = grp.create_dataset('masks', shape=(len(dataset), self.image_size, self.image_size), dtype=np.uint8)
+                cm = create_pseudo_masks(dataset, h5_ds)
+        else:
+            cm = create_pseudo_masks(dataset)
 
         metrics_dict = get_metrics_dict(cm)
         pickle.dump(metrics_dict, open(os.path.join(config.result_dir, 'biome_metrics.pkl'), 'wb'))

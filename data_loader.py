@@ -29,7 +29,7 @@ class PLL8BiomeDataset(pl.LightningDataModule):
         if config.h5_mem:
             self.train_ds = get_dataset(self.config.l8biome_image_dir,
                               'L8Biome', 'train', self.config.num_channels, 
-                              use_h5=self.config.use_h5, shared_mem=self.config.h5_mem)
+                              use_h5=self.config.use_h5, shared_mem=self.config.h5_mem, mask_file=config.mask_file)
             self.val_ds = get_dataset(self.config.l8biome_image_dir,
                               'L8Biome', 'val', self.config.num_channels, mask_file='mask.tif', ret_mask=True,
                               use_h5=self.config.use_h5, shared_mem=self.config.h5_mem, init_shuffle=True)
@@ -40,7 +40,7 @@ class PLL8BiomeDataset(pl.LightningDataModule):
     def train_dataloader(self):
         return get_loader(self.config.l8biome_image_dir, self.config.batch_size,
                           self.train_ds, 'train', self.config.num_workers, self.config.num_channels, 
-                          use_h5=self.config.use_h5, shared_mem=self.config.h5_mem, rank=self.trainer.global_rank)
+                          use_h5=self.config.use_h5,mask_file=self.config.mask_file, shared_mem=self.config.h5_mem, rank=self.trainer.global_rank)
 
     def val_dataloader(self):
         return get_loader(self.config.l8biome_image_dir, self.config.batch_size,
@@ -172,7 +172,8 @@ class L8BiomeDataset(data.Dataset):
         
         
 class L8BiomeHDFDataset(data.Dataset):
-    def __init__(self, root, transform, mode='train', ret_mask=True, keep_ratio=1.0, only_cloudy=False, shared=False, seed=42, shuffle=False):
+    def __init__(self, root, transform, mode='train', ret_mask=True, keep_ratio=1.0, only_cloudy=False,
+                 shared=False, seed=42, shuffle=False, mask_file=None, filename='copernic.h5'):
         self.root = root
         self.mode = mode
         self.only_cloudy = only_cloudy
@@ -182,6 +183,7 @@ class L8BiomeHDFDataset(data.Dataset):
         self.seed = seed
         self.shared_mem = shared
         self.shuffle = shuffle
+        self.filename = filename
         
         self.n_elements = 0
 
@@ -190,22 +192,29 @@ class L8BiomeHDFDataset(data.Dataset):
         self.masks = None
         self.labels = None
         self.indices = None
+        self.h5f_mask = None
+        self.masks2 = None
 
         self.classes = None
         self.class_to_idx = None
+        self.mask_file = mask_file
 
         self.__init_hdf()
         # Cannot pickle when creating workers
         self.h5f.close()
+        if self.h5f_mask is not None:
+            self.h5f_mask.close()
         self.h5f = None
+        self.h5f_mask = None
 
         if not self.shared_mem:
             self.images = None
             self.masks = None
             self.labels = None
+            self.masks2 = None
         
     def __init_hdf(self):
-        self.h5f = h5py.File(os.path.join(self.root, 'copernic.h5'), 'r')
+        self.h5f = h5py.File(os.path.join(self.root, self.filename), 'r')
         self.images = self.h5f['{}/{}'.format(self.mode, 'images')]
         self.masks = self.h5f['{}/{}'.format(self.mode, 'masks')]
         self.labels = self.h5f['{}/{}'.format(self.mode, 'labels')]
@@ -253,6 +262,20 @@ class L8BiomeHDFDataset(data.Dataset):
             end = time.time()
             print('{} labels loaded in {} ms'.format(self.mode, end - start))
 
+        if self.mask_file:
+            self.h5f_mask = h5py.File(os.path.join(self.root, self.mask_file), 'r')
+            self.masks2 = self.h5f['{}/{}'.format(self.mode, 'masks')]
+
+            if self.shared_mem:
+                print('Allocating memory (pseudo-masks)...')
+                tmp_arr = np.empty(self.masks2.shape, dtype=np.uint8)
+                print('Loading pseudo-masks...')
+                start = time.time()
+                self.masks2.read_direct(tmp_arr)
+                self.masks2 = torch.from_numpy(tmp_arr)
+                end = time.time()
+                print('{} pseudo-masks loaded in {} ms'.format(self.mode, end - start))
+
 
     def __getitem__(self, index):
         index = self.indices[index]
@@ -268,7 +291,10 @@ class L8BiomeHDFDataset(data.Dataset):
         }
         if self.return_mask:
             # 0 = invalid, 1 = clear, 2 = clouds
-            mask = self.masks[index]
+            if self.mask_file:
+                mask = self.masks2[index]
+            else:
+                mask = self.masks[index]
             if torch.is_tensor(mask):
                 mask = mask.numpy()
             

@@ -8,7 +8,9 @@ from torch.backends import cudnn
 import evaluate
 from supervised_solver import SupervisedSolver
 from cam_solver import CAMSolver
-
+from data_loader import PLL8BiomeDataset
+import pytorch_lightning as pl
+from pytorch_lightning.loggers import TensorBoardLogger
 
 def str2bool(v):
     return v.lower() in ('true')
@@ -31,7 +33,27 @@ def main(config):
     solver = SupervisedSolver(config)
 
     if config.mode == 'train':
-        solver.train()
+        data = PLL8BiomeDataset(config)
+
+        lrm = pl.callbacks.LearningRateMonitor()
+        ms = pl.callbacks.ModelSummary(max_depth=-1)
+        cpt = pl.callbacks.ModelCheckpoint(config.model_save_dir, monitor='val/F1Score', mode='max')
+        # dsm = pl.callbacks.DeviceStatsMonitor()
+
+        logger = TensorBoardLogger('runs', name=config.experiment_name, log_graph=True)
+
+        strategy = None
+        if config.n_gpus > 1:
+            if config.h5_mem:
+                strategy = 'ddp_spawn'
+            else:
+                strategy = 'ddp'
+
+        trainer = pl.Trainer(logger, accelerator="gpu", devices=config.n_gpus, callbacks=[lrm, ms, cpt],
+                             check_val_every_n_epoch=1, strategy=strategy,
+                             max_steps=config.num_iters, benchmark=True, fast_dev_run=False,
+                             precision=16 if config.mixed else 32)
+        trainer.fit(solver, datamodule=data)
     elif config.mode == 'test':
         evaluate.test_landsat8_biome_supervised(solver, config)
     elif config.mode == 'visualize':

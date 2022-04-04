@@ -64,7 +64,8 @@ def main(config):
                              precision=16 if config.mixed else 32)
         trainer.fit(solver, datamodule=data)
     elif config.mode == 'test':
-        print(solver.find_best_threshold())
+        thresh = solver.find_best_threshold()
+        solver.make_psuedo_masks(thresh, save=True)
         # evaluate.test_landsat8_biome(solver, config)
     elif config.mode == 'visualize':
         # solver.visualize_predictions()
@@ -143,6 +144,7 @@ if __name__ == '__main__':
     parser.add_argument('--interm_non_act', action='store_true', help='Use non-activated intermediate features from discriminator')
     parser.add_argument('--init_type', type=str, choices=['none', 'xn', 'xu', 'ortho'], default='none', help='NN init type')
     parser.add_argument('--use_attention', action='store_true', help='Use attention in discriminator')
+    parser.add_argument('--mask_file', type=str, help='PAth to pseudo mask train HDF5')
 
 
     config = parser.parse_args()
