@@ -80,6 +80,8 @@ def prepare_patches(config):
     
     print('Computing file sizes...')
     
+    stride = patch_size // 4
+    
     with tqdm_joblib(tqdm(desc='Reading tile (1st run)', total=len(images))) as progress_bar:
         def work_func(img_idx, image):
             split = train_val_test[img_idx]
@@ -87,14 +89,14 @@ def prepare_patches(config):
             assert x.dtype == np.uint16
             
             height, width, _ = x.shape
-            patches = list(product(range(0, patch_size * (height // patch_size), patch_size),
-                                   range(0, patch_size * (width // patch_size), patch_size)))
+            patches = list(product(range(0, height - patch_size, stride),
+                                   range(0, width - patch_size, stride)))
 
             if split == 'test':
                 return 0, 0 # use raw images for testing instead of patches
                 
             count = 0
-                
+            
             for row, col in patches:
                 #patch_x = x[row:row + patch_size, col:col + patch_size]
                 patch_mask = mask[row:row + patch_size, col:col + patch_size]
@@ -127,7 +129,7 @@ def prepare_patches(config):
         h5f.attrs.create('classes', ['clear', 'cloudy'])
         
         ds = {}
-        for split, size in zip(['train', 'val'], [train_size, val_size]):
+        for split, size in zip(['val'], [val_size]):
             grp = h5f.create_group(split)
             ds[split] = {
                 'images': grp.create_dataset('images', shape=(size, patch_size, patch_size, 10), dtype=np.uint16),
@@ -143,8 +145,8 @@ def prepare_patches(config):
             assert x.dtype == np.uint16
 
             height, width, _ = x.shape
-            patches = list(product(range(0, patch_size * (height // patch_size), patch_size),
-                                   range(0, patch_size * (width // patch_size), patch_size)))
+            patches = list(product(range(0, height - patch_size, stride),
+                                   range(0, width - patch_size, stride)))
 
             # Create thumbnail of full image for debugging
             thumbnail = np.clip(1.5 * (x[..., [3, 2, 1]].copy() >> 8), 0, 255).astype(np.uint8)
@@ -212,7 +214,7 @@ def split_train_val_test(images: List[CopernicImage], val_ratio=1 / 10, test_rat
 
 
 def get_copernic_images(data_path):
-    images = list(data_path.glob("*.TIF"))
+    images = list(data_path.glob("*.tif"))
     return images
 
 
@@ -246,6 +248,7 @@ def read_image(image: CopernicImage, return_profile=False):
 
     mask = get_ground_truth(x)
     x = x[..., :-1]
+    mask[np.all(x == 0, axis=-1)] = 0
 
     if return_profile:
         return x, mask, profile

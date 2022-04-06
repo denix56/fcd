@@ -37,7 +37,7 @@ def main(config):
 
         lrm = pl.callbacks.LearningRateMonitor()
         ms = pl.callbacks.ModelSummary(max_depth=-1)
-        cpt = pl.callbacks.ModelCheckpoint(config.model_save_dir, monitor='val/F1Score', mode='max')
+        cpt = pl.callbacks.ModelCheckpoint(config.model_save_dir, monitor='supervised/val/F1Score', mode='max')
         # dsm = pl.callbacks.DeviceStatsMonitor()
 
         logger = TensorBoardLogger('runs', name=config.experiment_name, log_graph=True)
@@ -100,7 +100,15 @@ if __name__ == '__main__':
     parser.add_argument('--freeze_encoder', type=str2bool, default=False)
     parser.add_argument('--classifier_head', type=str2bool, default=False)
     parser.add_argument('--log_step', type=int, default=10)
-
+    parser.add_argument('--mask_file', type=str, help='Path to pseudo mask train HDF5')
+    parser.add_argument('--use_h5', action='store_true', help='Use HDF5 dataset')
+    parser.add_argument('--h5_mem', action='store_true', help='Preload the whole dataset to shared memory')
+    parser.add_argument('--load_path', type=str, default=None, help='Path to model')
+    parser.add_argument('--n_gpus', type=int, default=1,
+                        help='specify number of gpus')
+    parser.add_argument('--mixed', action='store_true', help='Use mixed precision')
+    parser.add_argument('--num_iters', type=int, default=200000, help='number of total iterations for training D')
+    
     config = parser.parse_args()
 
     if config.experiment_name is not None:

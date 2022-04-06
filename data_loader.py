@@ -29,9 +29,10 @@ class PLL8BiomeDataset(pl.LightningDataModule):
         if config.h5_mem:
             self.train_ds = get_dataset(self.config.l8biome_image_dir,
                               'L8Biome', 'train', self.config.num_channels, 
-                              use_h5=self.config.use_h5, shared_mem=self.config.h5_mem, mask_file=config.mask_file)
+                              use_h5=self.config.use_h5, shared_mem=self.config.h5_mem, 
+                              mask_file=config.mask_file, ret_mask=config.mask_file is not None)
             self.val_ds = get_dataset(self.config.l8biome_image_dir,
-                              'L8Biome', 'val', self.config.num_channels, mask_file='mask.tif', ret_mask=True,
+                              'L8Biome', 'val', self.config.num_channels, ret_mask=True,
                               use_h5=self.config.use_h5, shared_mem=self.config.h5_mem, init_shuffle=True)
         else:
             self.train_ds = 'L8Biome'
@@ -40,13 +41,17 @@ class PLL8BiomeDataset(pl.LightningDataModule):
     def train_dataloader(self):
         return get_loader(self.config.l8biome_image_dir, self.config.batch_size,
                           self.train_ds, 'train', self.config.num_workers, self.config.num_channels, 
-                          use_h5=self.config.use_h5,mask_file=self.config.mask_file, shared_mem=self.config.h5_mem, rank=self.trainer.global_rank)
+                          use_h5=self.config.use_h5,mask_file=self.config.mask_file, 
+                          shared_mem=self.config.h5_mem, rank=self.trainer.global_rank, 
+                          ret_mask=self.config.mask_file is not None)
 
     def val_dataloader(self):
         return get_loader(self.config.l8biome_image_dir, self.config.batch_size,
                           self.val_ds, 'val', self.config.num_workers, 
-                          self.config.num_channels, mask_file='mask.tif', ret_mask=True,
-                          use_h5=self.config.use_h5, shared_mem=self.config.h5_mem, rank=self.trainer.global_rank, init_shuffle=True)
+                          self.config.num_channels, mask_file='mask.tif' if not self.config.h5_mem else None, 
+                          ret_mask=True,
+                          use_h5=self.config.use_h5, shared_mem=self.config.h5_mem,
+                          rank=self.trainer.global_rank, init_shuffle=True)
 
     def on_before_batch_transfer(self, batch, dataloader_idx):
         x_real, label_org = batch['image'], batch['label']
@@ -198,6 +203,7 @@ class L8BiomeHDFDataset(data.Dataset):
         self.classes = None
         self.class_to_idx = None
         self.mask_file = mask_file
+        print(self.mask_file)
 
         self.__init_hdf()
         # Cannot pickle when creating workers
@@ -261,7 +267,8 @@ class L8BiomeHDFDataset(data.Dataset):
             self.labels = torch.from_numpy(tmp_arr)
             end = time.time()
             print('{} labels loaded in {} ms'.format(self.mode, end - start))
-
+        
+        print(self.mask_file)
         if self.mask_file:
             self.h5f_mask = h5py.File(os.path.join(self.root, self.mask_file), 'r')
             self.masks2 = self.h5f['{}/{}'.format(self.mode, 'masks')]
@@ -374,7 +381,7 @@ def get_dataset(image_dir, dataset='L8Biome', mode='train',
             dataset = L8BiomeHDFDataset(image_dir, transform, mode, 
                   ret_mask=ret_mask, keep_ratio=keep_ratio, 
                   only_cloudy=only_cloudy, shared=shared_mem, 
-                  shuffle=init_shuffle, seed=seed)
+                  shuffle=init_shuffle, seed=seed, mask_file=mask_file)
         else:
             raise NotImplementedError()
         

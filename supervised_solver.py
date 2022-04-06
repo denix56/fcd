@@ -25,6 +25,7 @@ from torchvision.utils import save_image, make_grid
 
 class SupervisedSolver(pl.LightningModule):
     def __init__(self, config):
+        super().__init__()
         """Initialize configurations."""
 
         if isinstance(config, dict):
@@ -119,11 +120,17 @@ class SupervisedSolver(pl.LightningModule):
 
     def train_full_step(self, batch):
         # best_val_f1, epoch, step = self.restore_model(self.checkpoint_file)
-        inputs, target_labels, target_masks = batch
+        inputs, target_labels, _, _, _, target_masks = batch
+        target_masks = target_masks.to(torch.int64)
         target_masks -= 1
+        valid_mask = target_masks > -1
         # Train one epoch.
-
+        
         masks, labels = self.model(inputs)
+        masks_org = masks
+        target_masks = target_masks[valid_mask]
+        masks = masks.permute(0, 2, 3, 1)[valid_mask]
+        
         if self.classifier_head:
             loss = self.ce_criterion(masks, target_masks) + self.bce_criterion(labels, target_labels)
         else:
@@ -132,7 +139,7 @@ class SupervisedSolver(pl.LightningModule):
         self.log('supervised/train/loss', loss)
         self.log_dict(self.train_metrics(masks, target_masks))
 
-        self.visualize(inputs, masks)
+        self.visualize(inputs, masks_org)
 
         return loss
 
@@ -152,7 +159,7 @@ class SupervisedSolver(pl.LightningModule):
         Train only the encoder part of U-Net, for pretraining on image-level dataset.
         """
 
-        inputs, targets, _ = batch
+        inputs, _, _, _, _, targets = batch
 
         _, outputs = self.model(inputs)
 
@@ -167,17 +174,18 @@ class SupervisedSolver(pl.LightningModule):
 
     def val_classifier_step(self, batch):
         # Run validation
-        inputs, targets = batch
+        inputs, _, _, _, _, targets = batch
         _, outputs = self.model(inputs)
         self.val_metrics(outputs, targets)
 
     def full_validation_step(self, batch):
-        inputs, _, targets = batch
+        inputs, _, _, _, _, targets = batch
         outputs, _ = self.model(inputs)
+        targets = targets.to(torch.int64)
         targets = targets - 1
 
         valid_mask = targets > -1
-        predictions = outputs.argmax(dim=1)
+        predictions = outputs.argmax(dim=1).to(torch.int64)
         self.val_metrics(predictions[valid_mask], targets[valid_mask])
 
     def validation_step(self, batch, batch_idx):
@@ -192,11 +200,11 @@ class SupervisedSolver(pl.LightningModule):
 
     @staticmethod
     def to_rgb(tensor):
-        return (10.5 * SupervisedSolver.denorm(tensor[:, [3, 2, 1]])).clamp(0, 1)
+        return (4.5 * SupervisedSolver.denorm(tensor[:, [3, 2, 1]])).clamp(0, 1)
 
     @staticmethod
     def to_rgb_mask(tensor):
-        t = tensor.repeat(3, 1, 1) * torch.Tensor([26, 178, 255]).reshape(-1, 1, 1)
+        t = tensor.unsqueeze(1).repeat(1, 3, 1, 1) * torch.tensor([26, 178, 255], device=tensor.device).reshape(1, -1, 1, 1)
         return t / 255
 
     @torch.no_grad()
@@ -205,7 +213,6 @@ class SupervisedSolver(pl.LightningModule):
         preds = preds.argmax(dim=1)
         preds = SupervisedSolver.to_rgb_mask(preds)
         imgs = SupervisedSolver.to_rgb(inputs)
-
         x_concat = torch.cat([imgs, preds], dim=3)
         grid = make_grid(x_concat.data.cpu(), nrow=1, padding=0, normalize=True, value_range=(-1, 1))
         self.logger.experiment.add_image('images', grid, self.global_step)

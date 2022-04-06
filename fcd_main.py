@@ -64,7 +64,8 @@ def main(config):
                              precision=16 if config.mixed else 32)
         trainer.fit(solver, datamodule=data)
     elif config.mode == 'test':
-        thresh = solver.find_best_threshold()
+        #thresh, ds = solver.find_best_threshold()
+        thresh = 0.02794
         solver.make_psuedo_masks(thresh, save=True)
         # evaluate.test_landsat8_biome(solver, config)
     elif config.mode == 'visualize':

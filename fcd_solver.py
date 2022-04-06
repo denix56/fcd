@@ -76,7 +76,7 @@ class FCDSolver(pl.LightningModule):
         self.beta2 = config.beta2
         self.resume_iters = config.resume_iters
         self.best_val_f1 = 0
-        self.threshold = 0.07
+        self.threshold = 0.027
         self.init_type = config.init_type
 
         self.interm_non_act = config.interm_non_act
@@ -566,54 +566,6 @@ class FCDSolver(pl.LightningModule):
     def binarize(self, difference, threshold=0.2):
         return (difference > threshold).astype(np.uint8)
 
-    @torch.no_grad()
-    def find_best_threshold(self, seed=42, n_samples=10000, n_thresholds=30, dataset=None):
-        config = self.config
-        self.G.eval()
-
-        old_indices = None
-        if dataset is None:
-            dataset = get_dataset(self.config.l8biome_image_dir,
-                                   'L8Biome', 'train', self.config.num_channels,
-                                   use_h5=self.config.use_h5, shared_mem=self.config.h5_mem, mask_file='mask.tif',
-                                  ret_mask=True, only_cloudy=True, force_no_aug=True)
-        else:
-            old_indices = dataset.indices
-        random.seed(seed)
-        dataset.indices = np.random.choice(len(dataset), min(n_samples, len(dataset)), replace=False)
-        data_loader = get_loader(batch_size=config.batch_size, shuffle=False,
-        use_h5=self.config.use_h5, shared_mem=self.config.h5_mem, dataset=dataset, num_workers=config.num_workers)
-
-        all_preds, all_targets = [], []
-        for i, sample in enumerate(tqdm(data_loader, 'Finding best threshold for train dataset')):
-            inputs = sample['image'].to(self.device)
-
-            difference_map = self.compute_difference_map(inputs)
-            difference_map = difference_map.cpu().numpy().astype(np.float32)
-
-            targets = sample['mask'].numpy()
-            valid_mask = targets > 0
-            all_preds.append(difference_map[valid_mask])
-            all_targets.append(targets[valid_mask] - 1)
-
-        all_preds, all_targets = np.concatenate(all_preds), np.concatenate(all_targets)
-        thresholds = np.linspace(start=all_preds.min(), stop=all_preds.max(), num=n_thresholds)
-
-        best_f1, best_threshold = None, None
-        for threshold in thresholds:
-            preds = (all_preds > threshold).astype(np.uint8)
-            cm = metrics.compute_confusion_matrix(preds, all_targets, 2)
-            f1 = metrics.f1_score(cm)
-            print('For Threshold={:.4}: F1={:.4}'.format(threshold, f1))
-            if best_f1 is None or f1 >= best_f1:
-                best_f1, best_threshold = f1, threshold
-            else:
-                break
-
-        if old_indices is not None:
-            dataset.indices = old_indices
-        return best_threshold
-
     def visualize_predictions_sparcs(self):
         """Visualize input data for debugging."""
         #self.restore_model(self.test_iters)
@@ -723,8 +675,58 @@ class FCDSolver(pl.LightningModule):
         difference = torch.mean(difference, dim=1)
         # save_image(difference, str(patch_output_dir / '{}_difference_{}.jpg'.format(i, 'clear' if domain == 0 else 'cloudy')))
 
+
     @torch.no_grad()
-    def make_psuedo_masks(self, threshold=None, save=False, h5=True):
+    def find_best_threshold(self, seed=42, n_samples=10000, n_thresholds=30, dataset=None):
+        config = self.config
+        self.G.eval()
+
+        old_indices = None
+        if dataset is None:
+            dataset = get_dataset(self.config.l8biome_image_dir,
+                                   'L8Biome', 'train', self.config.num_channels,
+                                   use_h5=self.config.use_h5, shared_mem=self.config.h5_mem, mask_file='mask.tif',
+                                  ret_mask=True, only_cloudy=True, force_no_aug=True)
+        else:
+            old_indices = dataset.indices
+        random.seed(seed)
+        dataset.indices = np.random.choice(len(dataset), min(n_samples, len(dataset)), replace=False)
+        data_loader = get_loader(batch_size=config.batch_size, shuffle=False,
+        use_h5=self.config.use_h5, shared_mem=self.config.h5_mem, dataset=dataset, num_workers=config.num_workers)
+
+        all_preds, all_targets = [], []
+        for i, sample in enumerate(tqdm(data_loader, 'Finding best threshold for train dataset')):
+            inputs = sample['image'].to(self.device)
+
+            difference_map = self.compute_difference_map(inputs)
+            difference_map = difference_map.cpu().numpy().astype(np.float32)
+
+            targets = sample['mask'].numpy()
+            valid_mask = targets > 0
+            all_preds.append(difference_map[valid_mask])
+            all_targets.append(targets[valid_mask] - 1)
+
+        all_preds, all_targets = np.concatenate(all_preds), np.concatenate(all_targets)
+        thresholds = np.linspace(start=all_preds.min(), stop=all_preds.max(), num=n_thresholds)
+
+        best_f1, best_threshold = None, None
+        for threshold in thresholds:
+            preds = (all_preds > threshold).astype(np.uint8)
+            cm = metrics.compute_confusion_matrix(preds, all_targets, 2)
+            f1 = metrics.f1_score(cm)
+            print('For Threshold={:.4}: F1={:.4}'.format(threshold, f1))
+            if best_f1 is None or f1 >= best_f1:
+                best_f1, best_threshold = f1, threshold
+            else:
+                break
+
+        if old_indices is not None:
+            dataset.indices = old_indices
+        return best_threshold, dataset
+        
+
+    @torch.no_grad()
+    def make_psuedo_masks(self, threshold=None, dataset=None, save=False, h5=True):
         config = self.config
         self.G.eval()
 
@@ -733,12 +735,13 @@ class FCDSolver(pl.LightningModule):
 
         pseudo_mask_dir = os.path.join(config.result_dir, 'fcd_pseudo_masks')
         os.makedirs(pseudo_mask_dir, exist_ok=True)
-
-        dataset = get_dataset(self.config.l8biome_image_dir,
-                              'L8Biome', 'train', self.config.num_channels,
-                              use_h5=self.config.use_h5, shared_mem=self.config.h5_mem, mask_file='mask.tif',
-                              ret_mask=True,
-                              only_cloudy=True, force_no_aug=True)
+        
+        if dataset is None:
+            dataset = get_dataset(self.config.l8biome_image_dir,
+                                  'L8Biome', 'train', self.config.num_channels,
+                                  use_h5=self.config.use_h5, shared_mem=self.config.h5_mem, mask_file='mask.tif',
+                                  ret_mask=True,
+                                  only_cloudy=True, force_no_aug=True)
 
         def create_pseudo_masks(dataset, h5_ds=None):
             if threshold is None:
